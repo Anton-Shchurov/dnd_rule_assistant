@@ -1,0 +1,19 @@
+__pycache__/
+.venv/
+.env
+.DS_Store
+.idea/
+.vscode/
+
+# Qdrant
+qdrant_storage/
+
+# Data artifacts
+/data/processed/
+/data/embeddings/
+
+# Logs
+/logs/
+
+# Notebooks
+notebooks/.ipynb_checkpoints/

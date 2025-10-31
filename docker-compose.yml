@@ -1,0 +1,11 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest       # Официальный образ Qdrant (vector DB)
+    container_name: qdrant            # Имя контейнера (удобно для docker ps/logs)
+    restart: unless-stopped           # Перезапускать, если упал (кроме ручной остановки)
+    ports:
+      - "6333:6333"                   # Проброс HTTP API (host:container)
+      - "6334:6334"                   # Проброс gRPC (если понадобятся SDK на gRPC)
+    volumes:
+      - ./qdrant_storage:/qdrant/storage   # Персистентные данные коллекций
+      - ./qdrant_snapshots:/qdrant/snapshots # Снапшоты (backup/restore)
