@@ -1,1 +1,25 @@
-# Будет заполнено на шаге init-poetry (Poetry)
+[tool.poetry]
+name = "dnd-rule-assistant"
+version = "0.1.0"
+description = "DnD Rule Assistant: Docling → Markdown → RAG (Qdrant)"
+authors = ["Anton Shchurov antonshchurov.bim@gmail.com"]
+readme = "README.md"
+packages = [
+    { include = "dnd_rag", from = "src" }
+]
+
+[tool.poetry.dependencies]
+python = ">=3.10,<3.13"
+docling = "*"
+tiktoken = "^0.7.0"
+typer = "^0.12.0"
+pydantic-settings = "^2.4.0"
+rich = "^13.7.0"
+PyYAML = "^6.0.2"
+
+[tool.poetry.group.dev.dependencies]
+ipykernel = "^6.29.0"
+
+[build-system]
+requires = ["poetry-core>=1.5.0"]
+build-backend = "poetry.core.masonry.api"

@@ -1,0 +1,8 @@
+ingest:
+  chunk_size_tokens: 800
+  chunk_overlap_tokens: 120
+  min_paragraph_chars: 40
+  keep_tables_as_blocks: true
+  include_image_captions: true
+
+
