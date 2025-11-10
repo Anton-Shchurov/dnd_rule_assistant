@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .io import (
     Section,
@@ -28,7 +28,11 @@ def _detect_book_code(pdf_name: str) -> str:
 
 
 def parse_docs_pipeline(
-    raw_dir: str | Path, out_md_dir: str | Path, *, ocr: bool = False
+    raw_dir: str | Path,
+    out_md_dir: str | Path,
+    *,
+    ocr: bool = False,
+    ocr_langs: Optional[Sequence[str]] = None,
 ) -> List[Path]:
     raw_p = Path(raw_dir)
     out_p = Path(out_md_dir)
@@ -37,7 +41,7 @@ def parse_docs_pipeline(
     produced: List[Path] = []
     for pdf in sorted(raw_p.glob("*.pdf")):
         book = _detect_book_code(pdf.name)
-        md = parse_pdf_to_markdown(pdf, ocr=ocr)
+        md = parse_pdf_to_markdown(pdf, ocr=ocr, ocr_langs=ocr_langs)
         md = normalize_markdown(md)
         out_file = out_p / f"{book}.md"
         save_markdown(md, out_file)

@@ -4,18 +4,35 @@ import json
 import re
 import html
 import unicodedata
+import shutil
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
+from functools import lru_cache
 
 from docling.document_converter import DocumentConverter
 from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import TesseractCliOcrOptions
 import tiktoken
+
+try:  # Опциональная морфология для восстановления буквиц
+    import pymorphy2
+except ImportError:  # pragma: no cover - отсутствие зависимости не критично
+    pymorphy2 = None  # type: ignore[assignment]
 
 
 # --- Tokenization helpers ---
 
 _ENCODING = tiktoken.get_encoding("cl100k_base")
+
+if pymorphy2 is not None:  # pragma: no cover - зависит от окружения
+    try:
+        _MORPH_ANALYZER = pymorphy2.MorphAnalyzer()
+    except Exception:  # pragma: no cover - безопасный фолбэк
+        _MORPH_ANALYZER = None
+else:
+    _MORPH_ANALYZER = None
 
 
 def count_tokens(text: str) -> int:
@@ -46,7 +63,12 @@ class Chunk:
 
 # --- Parsing & normalization ---
 
-def parse_pdf_to_markdown(pdf_path: str | Path, *, ocr: bool = False) -> str:
+def parse_pdf_to_markdown(
+    pdf_path: str | Path,
+    *,
+    ocr: bool = False,
+    ocr_langs: Optional[Sequence[str]] = None,
+) -> str:
     """Convert a PDF into Markdown using Docling.
 
     Parameters
@@ -54,14 +76,52 @@ def parse_pdf_to_markdown(pdf_path: str | Path, *, ocr: bool = False) -> str:
     pdf_path: str | Path
         Path to PDF file.
     ocr: bool
-        If False, Docling keeps OCR disabled and relies on embedded PDF text;
-        if True, Docling may invoke OCR on problematic pages automatically.
+        If False, Docling использует встроенный текст PDF без OCR.
+        Если True, Docling включает OCR-пайплайн (PaddleOCR/Tesseract).
+    ocr_langs: Optional[Sequence[str]]
+        Список языковых подсказок для OCR (например, ("rus", "eng")).
+        По умолчанию используется ("rus", "eng"), если ocr=True.
     """
     converter = DocumentConverter()
-    if not ocr:
-        pdf_option = converter.format_to_options.get(InputFormat.PDF)
-        if pdf_option is not None and getattr(pdf_option, "pipeline_options", None):
-            pdf_option.pipeline_options.do_ocr = False
+    pdf_option = converter.format_to_options.get(InputFormat.PDF)
+    pipeline_options = None
+    if pdf_option is not None:
+        pipeline_options = getattr(pdf_option, "pipeline_options", None)
+
+    if pipeline_options is not None:
+        if hasattr(pipeline_options, "do_ocr"):
+            pipeline_options.do_ocr = bool(ocr)
+        if ocr:
+            if ocr_langs is None:
+                ocr_langs = ("rus", "eng")
+            lang_list = list(dict.fromkeys(ocr_langs)) if ocr_langs else []
+            lang_list = [str(lang).strip().lower() for lang in lang_list if lang]
+            if lang_list:
+                _ISO639_2 = {"en": "eng", "ru": "rus"}
+                lang_list = [_ISO639_2.get(code, code) for code in lang_list]
+            if not lang_list:
+                lang_list = ["eng"]
+            if hasattr(pipeline_options, "ocr_lang_hint"):
+                pipeline_options.ocr_lang_hint = lang_list
+            if hasattr(pipeline_options, "ocr_languages"):
+                pipeline_options.ocr_languages = lang_list
+            if hasattr(pipeline_options, "ocr_options"):
+                # Предпочитаем tesseract CLI: RapidOCR часто зависает на PDF с кириллицей.
+                tess_cmd = os.environ.get("TESSERACT_CMD") or shutil.which("tesseract")
+                if tess_cmd is None:
+                    raise RuntimeError(
+                        "Tesseract OCR не найден (исполняемый файл tesseract.exe отсутствует в PATH). "
+                        "Установите Tesseract и добавьте его в PATH или задайте переменную окружения "
+                        "TESSERACT_CMD с полным путём до tesseract.exe."
+                    )
+                options = TesseractCliOcrOptions(
+                    lang=lang_list,
+                    tesseract_cmd=tess_cmd,
+                )
+                options.force_full_page_ocr = True
+                pipeline_options.ocr_options = options
+            if hasattr(pipeline_options, "ocr_psm") and getattr(pipeline_options, "ocr_psm") is None:
+                pipeline_options.ocr_psm = "auto"
     result = converter.convert(str(pdf_path))
     md: str = result.document.export_to_markdown()
     return md
@@ -129,13 +189,39 @@ def _join_spaced_caps(text: str) -> str:
     return text
 
 
+_SINGLE_LETTER_WORDS_CYR = {"В", "К", "С", "Я", "О", "И", "А", "У", "Э", "Е", "Ю", "Ы"}
+_SINGLE_LETTER_WORDS_LAT = {"A", "I"}
+_RE_SINGLE_LETTER_CYR = re.compile(r"\b([А-ЯЁ])\s+([А-ЯЁа-яё]{2,})\b")
+_RE_SINGLE_LETTER_LAT = re.compile(r"\b([A-Z])\s+([A-Za-z]{2,})\b")
+
+
+def _join_single_letter_splits(text: str) -> str:
+    """Склейка слов вида 'П оследующие', 'D UNGEONS', 'М АСТЕР'."""
+
+    def _join_cyr(m: re.Match[str]) -> str:
+        first, rest = m.group(1), m.group(2)
+        if first in _SINGLE_LETTER_WORDS_CYR and not rest.isupper():
+            return m.group(0)
+        return first + rest
+
+    def _join_lat(m: re.Match[str]) -> str:
+        first, rest = m.group(1), m.group(2)
+        if first in _SINGLE_LETTER_WORDS_LAT and not rest.isupper():
+            return m.group(0)
+        return first + rest
+
+    text = _RE_SINGLE_LETTER_CYR.sub(_join_cyr, text)
+    text = _RE_SINGLE_LETTER_LAT.sub(_join_lat, text)
+    return text
+
+
 def _fix_hyphenation_and_linebreaks(text: str) -> str:
     """Fix line-break hyphenation and stray in-word newlines.
 
     - ([А-Яа-яЁё]) -\n ([А-Яа-яЁё]) → склейка
     - Внутрисловные переводы строк: (?<=\S)\n(?=\S) → пробел
     """
-    text = re.sub(r"([А-Яа-яЁё])-\s*\n\s*([А-Яа-яЁё])", r"\1\2", text)
+    text = re.sub(r"([A-Za-zА-Яа-яЁё])-\s*\n\s*([A-Za-zА-Яа-яЁё])", r"\1\2", text)
     text = re.sub(r"(?<=\S)\n(?=\S)", " ", text)
     return text
 
@@ -203,12 +289,76 @@ def _drop_f_prefix_before_rus_vowel(text: str) -> str:
 
 def _dedupe_repeated_words(text: str) -> str:
     """Collapse duplicated words produced after merges: 'персонажи персонажи' → 'персонажи'."""
-    pattern = re.compile(r"\b(\w{4,})\b\s+\1\b", flags=re.IGNORECASE)
+    pattern = re.compile(r"\b(\w{4,})\b(?:[ \t]+)\1\b", flags=re.IGNORECASE)
     prev = None
     while prev != text:
         prev = text
-        text = pattern.sub(r"\\1", text)
+        text = pattern.sub(r"\1", text)
     return text
+
+
+_RUS_INITIALS = tuple("АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ")
+_LAT_INITIALS = tuple("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+_DROP_CAP_RE = re.compile(r"(?m)^(?P<prefix>[#>\-\*\s]{0,5})(?P<word>[A-Za-zА-Яа-яЁё]{2,})(?=\b)")
+_RE_CYR = re.compile(r"[А-Яа-яЁё]")
+_RE_LAT = re.compile(r"[A-Za-z]")
+
+
+@lru_cache(maxsize=8192)
+def _is_known_word(word: str) -> bool:
+    if not word or _MORPH_ANALYZER is None:
+        return False
+    try:
+        return any(parse.is_known for parse in _MORPH_ANALYZER.parse(word))
+    except Exception:  # pragma: no cover - защищаемся от неожиданных ошибок морфологии
+        return False
+
+
+def _apply_case(template: str, replacement: str) -> str:
+    if not replacement:
+        return replacement
+    if template.isupper():
+        return replacement.upper()
+    if template.islower():
+        return replacement.lower()
+    if template[0].isupper():
+        return replacement[0].upper() + replacement[1:]
+    return replacement
+
+
+def _restore_dropcap_first_letter(text: str) -> str:
+    """Попытка восстановить буквицы через морфологию (если доступна)."""
+
+    if _MORPH_ANALYZER is None:
+        return text
+
+    def _replace(match: re.Match[str]) -> str:
+        prefix = match.group("prefix")
+        word = match.group("word")
+
+        if len(word) < 2:
+            return match.group(0)
+
+        if _is_known_word(word) or _is_known_word(word.lower()):
+            return match.group(0)
+
+        if _RE_CYR.search(word):
+            alphabet = _RUS_INITIALS
+        elif _RE_LAT.search(word):
+            alphabet = _LAT_INITIALS
+        else:
+            return match.group(0)
+
+        lower_rest = word.lower()
+        for letter in alphabet:
+            candidate_lower = (letter + lower_rest).lower()
+            if _is_known_word(candidate_lower):
+                candidate = _apply_case(word, candidate_lower)
+                return prefix + candidate
+
+        return match.group(0)
+
+    return _DROP_CAP_RE.sub(_replace, text)
 
 
 def deep_normalize_markdown(md: str) -> str:
@@ -217,12 +367,14 @@ def deep_normalize_markdown(md: str) -> str:
     Объединённые шаги нормализации:
     1) HTML entities → Unicode; `/uniXXXX` → символ.
     2) Склейка разнесённых капслоком слов (кириллица/латиница).
-    3) Починка переносов и внутрисловных переводов строк.
-    4) Нормализация дефиса/тире и пробелов вокруг знаков препинания.
-    5) Латиница→кириллица для омографов в русском окружении.
-    6) Чистка артефакта 'f' перед русской гласной.
-    7) Удаление сдвоенных слов.
-    8) Unicode NFC и уплотнение пробелов.
+    3) Склейка "П оследующие" / "D UNGEONS".
+    4) Починка переносов и внутрисловных переводов строк.
+    5) Нормализация дефиса/тире и пробелов вокруг знаков препинания.
+    6) Попытка восстановить буквицы через pymorphy2 (если библиотека доступна).
+    7) Латиница→кириллица для омографов в русском окружении.
+    8) Чистка артефакта 'f' перед русской гласной.
+    9) Удаление сдвоенных слов.
+    10) Unicode NFC и уплотнение пробелов.
     """
     if not md:
         return md
@@ -234,8 +386,10 @@ def deep_normalize_markdown(md: str) -> str:
     text = normalize_markdown(text)
     # Deep fixes
     text = _join_spaced_caps(text)
+    text = _join_single_letter_splits(text)
     text = _fix_hyphenation_and_linebreaks(text)
     text = _normalize_dashes_and_spaces(text)
+    text = _restore_dropcap_first_letter(text)
     text = _fix_homoglyphs_in_russian_context(text)
     text = _drop_f_prefix_before_rus_vowel(text)
     text = _dedupe_repeated_words(text)
