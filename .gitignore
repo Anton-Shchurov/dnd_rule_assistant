@@ -14,6 +14,7 @@ qdrant_storage/
 
 # Logs
 /logs/
+!/logs/.gitkeep
 
 # Notebooks
 notebooks/.ipynb_checkpoints/

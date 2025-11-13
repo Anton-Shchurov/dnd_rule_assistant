@@ -61,6 +61,15 @@ class Chunk:
     tokens: int
 
 
+@dataclass
+class SuspiciousParagraph:
+    text: str
+    score: float
+    reasons: List[str]
+    start_line: int
+    end_line: int
+
+
 # --- Parsing & normalization ---
 
 def parse_pdf_to_markdown(
@@ -165,10 +174,6 @@ def normalize_markdown(md: str) -> str:
 
 # --- Deep normalization (for noisy OCR/Docling output) ---
 
-_RE_SPACED_CAPS_CYR = re.compile(r"(?<!\S)([А-ЯЁ](?:\s[А-ЯЁ]){1,})(?!\S)")
-_RE_SPACED_CAPS_LAT = re.compile(r"(?<!\S)([A-Z](?:\s[A-Z]){2,})(?!\S)")
-
-
 def _decode_uni_escapes(text: str) -> str:
     """Convert sequences like '/uni041F' to actual Unicode chars (e.g., 'П')."""
     return re.sub(r"/uni([0-9A-Fa-f]{4})", lambda m: chr(int(m.group(1), 16)), text)
@@ -177,16 +182,6 @@ def _decode_uni_escapes(text: str) -> str:
 def _html_unescape(text: str) -> str:
     """Decode HTML entities (&amp; → &, etc.)."""
     return html.unescape(text)
-
-
-def _join_spaced_caps(text: str) -> str:
-    """Collapse spaced all-caps words like 'Г ЛАВА' / 'D U N G E O N S'."""
-    def _join(m: re.Match[str]) -> str:
-        return m.group(0).replace(" ", "")
-
-    text = _RE_SPACED_CAPS_CYR.sub(_join, text)
-    text = _RE_SPACED_CAPS_LAT.sub(_join, text)
-    return text
 
 
 _SINGLE_LETTER_WORDS_CYR = {"В", "К", "С", "Я", "О", "И", "А", "У", "Э", "Е", "Ю", "Ы"}
@@ -222,7 +217,18 @@ def _fix_hyphenation_and_linebreaks(text: str) -> str:
     - Внутрисловные переводы строк: (?<=\S)\n(?=\S) → пробел
     """
     text = re.sub(r"([A-Za-zА-Яа-яЁё])-\s*\n\s*([A-Za-zА-Яа-яЁё])", r"\1\2", text)
-    text = re.sub(r"(?<=\S)\n(?=\S)", " ", text)
+
+    def _join_non_structural(match: re.Match[str]) -> str:
+        before = match.group(1)
+        newline = match.group(2)
+        after = match.group(3)
+        if before.rstrip().endswith("|") or after.lstrip().startswith("|"):
+            return before + newline + after
+        if after.lstrip().startswith(("#", "-", "*", "+", "•")):
+            return before + newline + after
+        return before + " " + after.lstrip()
+
+    text = re.sub(r"([^\n])(\n)([^\n])", _join_non_structural, text)
     return text
 
 
@@ -266,6 +272,242 @@ _LAT_TO_CYR = str.maketrans({
     "Y": "У",
     "y": "у",
 })
+
+
+_NOISE_SHORT_LINE_RE = re.compile(r"^[\W\d_]{1,3}$")
+_NOISE_SOURCE_LINE_RE = re.compile(r"^@[A-Za-z0-9_.-]+\s*\(\d+(?:-\d+)?\)$")
+_NOISE_HTML_COMMENT_RE = re.compile(r"^<!--.*-->$")
+_NOISE_SHORT_LETTERS_RE = re.compile(
+    r"^(?!(?:да|нет|yes|no)$)[A-Za-zА-Яа-яЁё]{1,3}$", re.IGNORECASE
+)
+
+
+def _drop_noise_lines(text: str) -> str:
+    """Remove stray OCR artefacts like isolated punctuation or '@file (p-range)' markers."""
+    lines = text.splitlines()
+    cleaned: List[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            cleaned.append(line)
+            continue
+        if _NOISE_HTML_COMMENT_RE.match(stripped):
+            continue
+        if stripped.startswith("<") and ">" not in stripped:
+            continue
+        if not re.search(r"[A-Za-zА-Яа-яЁё]", stripped):
+            if _NOISE_SHORT_LINE_RE.match(stripped):
+                continue
+        if _NOISE_SOURCE_LINE_RE.match(stripped):
+            continue
+        if _NOISE_SHORT_LETTERS_RE.match(stripped):
+            continue
+        cleaned.append(line)
+    return "\n".join(cleaned)
+
+
+_WORD_RE = re.compile(r"[A-Za-zА-Яа-яЁё']+")
+_LAT_RE = re.compile(r"[A-Za-z]")
+_CYR_RE = re.compile(r"[А-Яа-яЁё]")
+_MIXED_SCRIPT_WORD_RE = re.compile(r"(?=.*[A-Za-z])(?=.*[А-Яа-яЁё])")
+_ALLOWED_SYMBOLS = set(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"
+    "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
+    "0123456789"
+    " .,:;!?\"'«»„“”()[]{}<>-–—/%&+#°•…"
+)
+
+
+def _evaluate_paragraph(
+    lines: List[str],
+    start_idx: int,
+    end_idx: int,
+    *,
+    min_score: float,
+    dominant_script: str | None = None,
+) -> Optional[SuspiciousParagraph]:
+    text = "\n".join(lines).strip()
+    if not text:
+        return None
+    first_line = lines[0].lstrip()
+    if first_line.startswith("#"):
+        return None
+
+    words = _WORD_RE.findall(text)
+    if not words:
+        return None
+
+    cyr_chars = sum(1 for ch in text if _CYR_RE.match(ch))
+    lat_chars = sum(1 for ch in text if _LAT_RE.match(ch))
+    if dominant_script is None:
+        if cyr_chars >= lat_chars:
+            dominant_script = "cyr"
+        elif lat_chars:
+            dominant_script = "lat"
+        else:
+            dominant_script = "unknown"
+
+    if len(text) <= 10:
+        reasons = ["short-fragment"]
+        if _LAT_RE.search(text):
+            reasons.append("latin-only")
+        return SuspiciousParagraph(
+            text=text,
+            score=0.6 if "latin-only" in reasons else 0.3,
+            reasons=sorted(reasons),
+            start_line=start_idx + 1,
+            end_line=end_idx + 1,
+        )
+
+    if _NOISE_HTML_COMMENT_RE.match(text):
+        return SuspiciousParagraph(
+            text=text,
+            score=0.7,
+            reasons=["html-comment"],
+            start_line=start_idx + 1,
+            end_line=end_idx + 1,
+        )
+
+    total_words = len(words)
+    suspicious_words = 0
+    latin_words = 0
+    cyrillic_words = 0
+    latin_only_words = 0
+    reasons: set[str] = set()
+    extra_component = 0.0
+    has_mixed_token = False
+
+    for raw_word in words:
+        word = raw_word.strip("'")
+        if not word:
+            continue
+        has_lat = bool(_LAT_RE.search(word))
+        has_cyr = bool(_CYR_RE.search(word))
+        if has_lat:
+            latin_words += 1
+        if has_cyr:
+            cyrillic_words += 1
+
+        word_flag = False
+
+        if _MIXED_SCRIPT_WORD_RE.search(word):
+            word_flag = True
+            reasons.add("mixed-script")
+            has_mixed_token = True
+
+        upper_count = sum(1 for ch in word if ch.isupper())
+        if upper_count >= 2 and not word.isupper():
+            word_flag = True
+            reasons.add("mixed-case")
+
+        if has_cyr and len(word) >= 5 and _MORPH_ANALYZER is not None:
+            lower = word.lower()
+            if not _is_known_word(lower):
+                word_flag = True
+                reasons.add("unknown-cyr")
+
+        if has_lat and not has_cyr:
+            latin_only_words += 1
+        if has_lat and not has_cyr and dominant_script == "cyr":
+            if len(word) >= 4 or (len(word) <= 3 and cyrillic_words >= 3):
+                if not word.isupper():
+                    word_flag = True
+                    reasons.add("latin-in-cyr")
+                    extra_component = max(extra_component, 0.5)
+
+        if word_flag:
+            suspicious_words += 1
+
+    total_chars = sum(1 for ch in text if not ch.isspace())
+    weird_chars = sum(
+        1 for ch in text if not (ch.isspace() or ch in _ALLOWED_SYMBOLS)
+    )
+    weird_ratio = (weird_chars / total_chars) if total_chars else 0.0
+    char_component = 0.0
+    if weird_ratio > 0.05:
+        reasons.add("weird-chars")
+        char_component = min(0.4, (weird_ratio - 0.05) * 4.0)
+
+    latin_component = 0.0
+    if cyrillic_words >= 4 and latin_words > 0:
+        latin_ratio = latin_words / (latin_words + cyrillic_words)
+        if latin_ratio > 0.2:
+            reasons.add("latin-ratio")
+            latin_component = min(0.4, (latin_ratio - 0.2) * 2.0)
+
+    if dominant_script == "cyr" and latin_only_words > 0:
+        reasons.add("latin-only")
+        extra_component = max(extra_component, min(0.6, 0.4 + 0.05 * latin_only_words))
+
+    word_ratio = suspicious_words / total_words if total_words else 0.0
+    score = min(1.0, word_ratio + char_component + latin_component + extra_component)
+
+    # БИНАРНОЕ ПРАВИЛО: если есть смешанный токен (кириллица+латиница в одном слове),
+    # отправляем абзац в LLM независимо от min_score.
+    candidate = SuspiciousParagraph(
+        text=text,
+        score=score,
+        reasons=sorted(reasons),
+        start_line=start_idx + 1,
+        end_line=end_idx + 1,
+    )
+    if has_mixed_token:
+        return candidate
+
+    if score < min_score or not reasons:
+        return None
+
+    return candidate
+
+
+def find_suspicious_paragraphs(
+    text: str,
+    *,
+    min_score: float = 0.45,
+    max_results: Optional[int] = None,
+) -> List[SuspiciousParagraph]:
+    """Scan Markdown text and flag paragraphs likely containing OCR artefacts."""
+    lines = text.splitlines()
+    results: List[SuspiciousParagraph] = []
+    buffer: List[str] = []
+    start_idx = 0
+
+    for idx, line in enumerate(lines):
+        if line.strip():
+            if not buffer:
+                start_idx = idx
+            buffer.append(line)
+        else:
+            if buffer:
+                cand = _evaluate_paragraph(buffer, start_idx, idx - 1, min_score=min_score)
+                if cand is not None:
+                    results.append(cand)
+                buffer = []
+
+    if buffer:
+        cand = _evaluate_paragraph(buffer, start_idx, len(lines) - 1, min_score=min_score)
+        if cand is not None:
+            results.append(cand)
+
+    def _priority(p: SuspiciousParagraph) -> Tuple[int, float, int]:
+        reasons = set(p.reasons)
+        if "latin-only" in reasons or "latin-in-cyr" in reasons:
+            priority = 0
+        elif "mixed-script" in reasons or "latin-ratio" in reasons:
+            priority = 1
+        elif "unknown-cyr" in reasons or "weird-chars" in reasons:
+            priority = 2
+        elif "short-fragment" in reasons:
+            priority = 4
+        else:
+            priority = 3
+        return (priority, -p.score, p.start_line)
+
+    results.sort(key=_priority)
+    if max_results is not None:
+        results = results[:max_results]
+    return results
 
 
 def _fix_homoglyphs_in_russian_context(text: str) -> str:
@@ -366,15 +608,16 @@ def deep_normalize_markdown(md: str) -> str:
 
     Объединённые шаги нормализации:
     1) HTML entities → Unicode; `/uniXXXX` → символ.
-    2) Склейка разнесённых капслоком слов (кириллица/латиница).
-    3) Склейка "П оследующие" / "D UNGEONS".
-    4) Починка переносов и внутрисловных переводов строк.
-    5) Нормализация дефиса/тире и пробелов вокруг знаков препинания.
-    6) Попытка восстановить буквицы через pymorphy2 (если библиотека доступна).
-    7) Латиница→кириллица для омографов в русском окружении.
-    8) Чистка артефакта 'f' перед русской гласной.
-    9) Удаление сдвоенных слов.
-    10) Unicode NFC и уплотнение пробелов.
+    2) Базовая нормализация переносов и пустых строк.
+    3) Удаление шумовых строк (`@DMG.md (2-11)`, одиночные символы).
+    4) Склейка "П оследующие" / "D UNGEONS".
+    5) Починка переносов и внутрисловных переводов строк.
+    6) Нормализация дефиса/тире и пробелов вокруг знаков препинания.
+    7) Попытка восстановить буквицы через pymorphy2 (если библиотека доступна).
+    8) Латиница→кириллица для омографов в русском окружении.
+    9) Чистка артефакта 'f' перед русской гласной.
+    10) Удаление сдвоенных слов.
+    11) Unicode NFC и уплотнение пробелов.
     """
     if not md:
         return md
@@ -385,7 +628,7 @@ def deep_normalize_markdown(md: str) -> str:
     # Base lightweight fixes first
     text = normalize_markdown(text)
     # Deep fixes
-    text = _join_spaced_caps(text)
+    text = _drop_noise_lines(text)
     text = _join_single_letter_splits(text)
     text = _fix_hyphenation_and_linebreaks(text)
     text = _normalize_dashes_and_spaces(text)

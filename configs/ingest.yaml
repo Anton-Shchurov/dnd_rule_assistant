@@ -4,5 +4,16 @@ ingest:
   min_paragraph_chars: 40
   keep_tables_as_blocks: true
   include_image_captions: true
+  llm_postprocess:
+    enabled: true
+    min_score: 0.45
+    max_paragraphs: 200
+    temperature: 0.0
+    model: null
+    api_key_env: LLM_API_KEY
+    model_env: MODEL
+    base_url_env: URL_MODEL
+    max_retries: 2
+    request_timeout: 30.0
 
 
