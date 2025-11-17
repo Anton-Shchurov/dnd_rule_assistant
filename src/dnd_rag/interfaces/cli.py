@@ -8,8 +8,15 @@ import typer
 from rich import print
 from rich.table import Table
 
-from dnd_rag.core.pipelines import chunk_docs_pipeline, parse_docs_pipeline
+from dnd_rag.core.pipelines import (
+    chunk_docs_pipeline,
+    parse_docs_pipeline,
+    sections_from_md_pipeline,
+    chunks_from_sections_pipeline,
+)
 from dnd_rag.core.config import DEFAULT_CONFIG_PATH
+from dnd_rag.providers.vectorstore import get_client, ensure_collection, upsert_vectors
+from dnd_rag.providers.embeddings import embed_texts
 
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
@@ -33,6 +40,27 @@ def docs_chunk(
     config: Path = typer.Option(DEFAULT_CONFIG_PATH, "--config", help="Путь к YAML-конфигу"),
 ):
     produced = chunk_docs_pipeline(in_dir, out_dir, config_path=config)
+    for p in produced:
+        print(f"[green]Chunks сохранены[/green]: {p}")
+
+
+@app.command("sections")
+def sections_cmd(
+    in_dir: Path = typer.Option(Path("data/processed/md_clean"), "--in", help="Папка с Markdown"),
+    out_dir: Path = typer.Option(Path("data/processed/sections"), "--out", help="Папка для JSONL секций"),
+):
+    produced = sections_from_md_pipeline(in_dir, out_dir)
+    for p in produced:
+        print(f"[green]Sections сохранены[/green]: {p}")
+
+
+@app.command("chunks")
+def chunks_cmd(
+    in_dir: Path = typer.Option(Path("data/processed/sections"), "--in", help="Папка с JSONL секциями"),
+    out_dir: Path = typer.Option(Path("data/processed/chunks"), "--out", help="Папка для JSONL чанков"),
+    config: Path = typer.Option(DEFAULT_CONFIG_PATH, "--config", help="Путь к YAML-конфигу"),
+):
+    produced = chunks_from_sections_pipeline(in_dir, out_dir, config_path=config)
     for p in produced:
         print(f"[green]Chunks сохранены[/green]: {p}")
 
@@ -95,6 +123,55 @@ def docs_sample(
         )
 
     print(table)
+
+
+@app.command("init-qdrant")
+def init_qdrant(
+    collection: str = typer.Option("dnd_rule_assistant", "--collection", help="Имя коллекции"),
+    host: str = typer.Option("localhost", "--host", envvar="QDRANT_HOST"),
+    port: int = typer.Option(6333, "--port", envvar="QDRANT_PORT"),
+    dim: int = typer.Option(1536, "--dim", help="Размерность эмбеддинга"),
+):
+    client = get_client(host=host, port=port)
+    ensure_collection(client, collection, vector_size=dim)
+    print(f"[green]Qdrant коллекция готова[/green]: {collection} (dim={dim})")
+
+
+@app.command("index")
+def index_cmd(
+    chunks: List[Path] = typer.Argument(..., help="Список путей к JSONL с чанками"),
+    collection: str = typer.Option("dnd_rule_assistant", "--collection", help="Имя коллекции"),
+    host: str = typer.Option("localhost", "--host", envvar="QDRANT_HOST"),
+    port: int = typer.Option(6333, "--port", envvar="QDRANT_PORT"),
+    model: str = typer.Option("text-embedding-3-small", "--model", help="Модель эмбеддингов OpenAI"),
+):
+    client = get_client(host=host, port=port)
+    # размерность 1536 для text-embedding-3-small
+    ensure_collection(client, collection, vector_size=1536)
+
+    # Считываем чанки
+    rows: List[dict] = []
+    for fp in chunks:
+        rows.extend(_read_jsonl(fp))
+
+    texts = [r.get("text", "") for r in rows]
+    ids = [r.get("chunk_id", "") for r in rows]
+    payloads: List[dict] = []
+    for r in rows:
+        payloads.append(
+            {
+                "chunk_id": r.get("chunk_id", ""),
+                "book_title": r.get("book_title", ""),
+                "chapter_title": r.get("chapter_title", ""),
+                "section_path": r.get("section_path", []),
+                "chunk_index": r.get("chunk_index", 0),
+            }
+        )
+
+    vectors = embed_texts(texts, model=model)
+    upsert_vectors(client, collection, ids=ids, vectors=vectors, payloads=payloads)
+
+    print(f"[green]Загружено в Qdrant[/green]: {len(rows)} точек → {collection}")
 
 
 def main():  # pragma: no cover

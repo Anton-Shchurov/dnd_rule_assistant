@@ -43,7 +43,6 @@ dnd_rule_assistant/
   - core/: бизнес-логика и пайплайны.
     - config.py: централизованные настройки (через .env/pydantic-settings).
     - io.py: парсинг Docling, нормализация текста, сохранение/чтение артефактов.
-    - llm_cleanup.py: точечная постобработка абзацев через LangChain + OpenAI.
     - retriever.py: векторный/гибридный поиск, top-k, (опц.) rerank.
     - pipelines.py: сценарии ingest/index/query как переиспользуемые функции.
   - providers/: адаптеры внешних сервисов.
@@ -57,7 +56,7 @@ dnd_rule_assistant/
 - notebooks/: исследования — чанкинг, качество поиска, промпты.
 - tests/: автоматические тесты (smoke/интеграционные для пайплайна и ретривера).
 - scripts/: инженерные утилиты (тонкие обёртки над функциями из src/interfaces/cli.py).
-- logs/: лог-файлы выполнения (не коммитятся), включая `logs/llm_cleanup/*.json` с трассами LLM-правок.
+- logs/: лог-файлы выполнения (не коммитятся).
 - qdrant_storage/: volume для Qdrant, монтируется Docker'ом (не коммитится).
 - docker-compose.yml: локальный Qdrant (порт 6333) с маунтом `./qdrant_storage`.
 - pyproject.toml: управление зависимостями через Poetry.
@@ -66,16 +65,27 @@ dnd_rule_assistant/
 
 Примечание: часть файлов появится по мере реализации модулей (ингест, эмбеддинги, ретривер, бота и CLI).
 
-## LLM-постобработка Markdown
+## Нормализация Markdown
+Ключевые правила нормализации включают:\n
+- Декодирование HTML/`/uniXXXX` последовательностей\n
+- Удаление шумных строк и склейка разрывов слов/строк\n
+- Нормализация дефиса/тире и пробелов\n
+- Восстановление буквиц при наличии `pymorphy2`\n
+- Безопасная замена латинских гомоглифов в русских словах (в т.ч. `h→н`, `m→м`, `t→т`)\n
+- Замена коротких латинских слов в русских строках (белый список; при `pymorphy2` — проверка словаря)\n
+- Замена цифр внутри русских слов (`3/6/0` → «З/з, Б/б, О/о»; `4` в конце → «й/Й»; исключая нотации костей)\n
 
-1. Установите зависимости через Poetry: `poetry install`.
-2. Создайте `.env` в корне репозитория и пропишите, например:
-   ```
-   OPENAI_API_KEY=sk-...
-   OPENAI_MODEL=gpt-4o-mini
-   ```
-   Файл уже игнорируется Git.
-3. Отредактируйте `configs/ingest.yaml` → секция `llm_postprocess`: включите `enabled: true`, задайте `min_score`, `max_paragraphs`, `temperature`, при необходимости отличную модель.
-4. Запустите ноутбук `notebooks/02_chunk_and_sample.ipynb`; пайплайн возьмёт параметры из YAML автоматически и сохранит чистый текст в `data/processed/md_clean`.
-5. После выполнения `normalize_md_dir_pipeline(...)` отчёт о правках попадёт в `logs/llm_cleanup/<book>.json` в формате «до / после».
+## Новый двухэтапный пайплайн (Sections → Chunks → Qdrant)
 
+- Разделение на секции (без резки по длине):
+  - `poetry run python -m dnd_rag.interfaces.cli sections --in data/processed/md_clean --out data/processed/sections`
+
+- Чанкинг секций токеновым RCTS (параметры из `configs/ingest.yaml`):
+  - `poetry run python -m dnd_rag.interfaces.cli chunks --in data/processed/sections --out data/processed/chunks --config configs/ingest.yaml`
+
+- Инициализация коллекции Qdrant (локально):
+  - `docker compose up -d qdrant`
+  - `poetry run python -m dnd_rag.interfaces.cli init-qdrant --collection dnd_rule_assistant --host localhost --port 6333 --dim 1536`
+
+- Индексация чанков (OpenAI text-embedding-3-small, ключ в `OPENAI_API_KEY`):
+  - `poetry run python -m dnd_rag.interfaces.cli index --collection dnd_rule_assistant --chunks data/processed/chunks/DMG.jsonl data/processed/chunks/PHB.jsonl`

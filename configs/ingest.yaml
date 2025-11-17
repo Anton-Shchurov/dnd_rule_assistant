@@ -1,19 +1,110 @@
+# ==============================================================================
+# Document Ingestion Configuration File
+# Файл конфигурации загрузки документов
+# ==============================================================================
+# This YAML file contains settings for how D&D documents are processed and split.
+# These settings control how text is divided into chunks for embedding and retrieval.
+#
+# Этот YAML-файл содержит настройки для обработки и разделения документов D&D.
+# Эти настройки контролируют, как текст делится на фрагменты для векторизации и поиска.
+#
+# You can override any setting by setting an environment variable with prefix INGEST_
+# Example: INGEST_CHUNK_SIZE_TOKENS=1000
+#
+# Вы можете переопределить любую настройку, установив переменную окружения с префиксом INGEST_
+# Пример: INGEST_CHUNK_SIZE_TOKENS=1000
+# ==============================================================================
+
 ingest:
+  # ------------------------------------------------------------------------
+  # chunk_size_tokens: Maximum size of each text chunk in tokens
+  # chunk_size_tokens: Максимальный размер каждого фрагмента текста в токенах
+  # ------------------------------------------------------------------------
+  # A "token" is roughly equivalent to a word or part of a word.
+  # Larger chunks = more context per chunk but fewer total chunks.
+  # Smaller chunks = more granular but may lose context.
+  #
+  # "Токен" примерно эквивалентен слову или части слова.
+  # Большие фрагменты = больше контекста на фрагмент, но меньше общих фрагментов.
+  # Маленькие фрагменты = более детализированные, но могут потерять контекст.
+  #
+  # Recommended range: 500-1000 tokens / Рекомендуемый диапазон: 500-1000 токенов
+  # ------------------------------------------------------------------------
   chunk_size_tokens: 800
+  
+  # ------------------------------------------------------------------------
+  # chunk_overlap_tokens: Number of tokens to overlap between chunks
+  # chunk_overlap_tokens: Количество токенов для перекрытия между фрагментами
+  # ------------------------------------------------------------------------
+  # Overlapping helps maintain context between consecutive chunks.
+  # For example, if a sentence is split across two chunks, the overlap
+  # ensures both chunks contain the complete sentence.
+  #
+  # Перекрытие помогает сохранять контекст между последовательными фрагментами.
+  # Например, если предложение разделено между двумя фрагментами, перекрытие
+  # гарантирует, что оба фрагмента содержат полное предложение.
+  #
+  # Typical values: 10-20% of chunk_size / Типичные значения: 10-20% от chunk_size
+  # Too much overlap = redundancy / Слишком много перекрытия = избыточность
+  # Too little overlap = lost context / Слишком мало перекрытия = потеря контекста
+  # ------------------------------------------------------------------------
   chunk_overlap_tokens: 120
+  
+  # ------------------------------------------------------------------------
+  # min_paragraph_chars: Minimum character count for a paragraph to process
+  # min_paragraph_chars: Минимальное количество символов для обработки параграфа
+  # ------------------------------------------------------------------------
+  # Paragraphs shorter than this value will be:
+  # - Merged with adjacent paragraphs, OR
+  # - Skipped entirely
+  #
+  # Параграфы короче этого значения будут:
+  # - Объединены с соседними параграфами, ИЛИ
+  # - Полностью пропущены
+  #
+  # This helps filter out:
+  # - Empty lines / Пустые строки
+  # - Single-word headers / Заголовки из одного слова
+  # - Formatting artifacts / Артефакты форматирования
+  # ------------------------------------------------------------------------
   min_paragraph_chars: 40
+  
+  # ------------------------------------------------------------------------
+  # keep_tables_as_blocks: Keep tables as whole blocks (don't split)
+  # keep_tables_as_blocks: Сохранять таблицы как целые блоки (не разделять)
+  # ------------------------------------------------------------------------
+  # true = Tables will always stay together as one complete chunk
+  #        This preserves table structure and readability
+  # false = Tables can be split across multiple chunks
+  #         This may break table formatting but allows more flexibility
+  #
+  # true = Таблицы всегда останутся вместе как один полный фрагмент
+  #        Это сохраняет структуру и читаемость таблицы
+  # false = Таблицы могут быть разделены на несколько фрагментов
+  #         Это может нарушить форматирование таблицы, но даёт больше гибкости
+  #
+  # Recommendation: Keep 'true' for D&D rules with complex tables
+  # Рекомендация: Оставьте 'true' для правил D&D со сложными таблицами
+  # ------------------------------------------------------------------------
   keep_tables_as_blocks: true
+  
+  # ------------------------------------------------------------------------
+  # include_image_captions: Include image captions in processed text
+  # include_image_captions: Включать подписи к изображениям в обработанный текст
+  # ------------------------------------------------------------------------
+  # true = Image captions and alt-text will be included in chunks
+  #        This provides more context about illustrations
+  # false = Image captions will be ignored
+  #         This reduces noise if images are not important
+  #
+  # true = Подписи к изображениям и alt-текст будут включены во фрагменты
+  #        Это даёт больше контекста об иллюстрациях
+  # false = Подписи к изображениям будут игнорироваться
+  #         Это уменьшает шум, если изображения не важны
+  #
+  # Recommendation: Keep 'true' if your D&D content has meaningful diagrams
+  # Рекомендация: Оставьте 'true', если ваш контент D&D имеет значимые диаграммы
+  # ------------------------------------------------------------------------
   include_image_captions: true
-  llm_postprocess:
-    enabled: true
-    min_score: 0.45
-    max_paragraphs: 200
-    temperature: 0.0
-    model: null
-    api_key_env: LLM_API_KEY
-    model_env: MODEL
-    base_url_env: URL_MODEL
-    max_retries: 2
-    request_timeout: 30.0
 
 
