@@ -4,8 +4,8 @@ EN: Document Processing Pipelines for D&D RAG System
 RU: Конвейеры обработки документов для D&D RAG системы
 ================================================================================
 
-EN: This module contains three main pipelines for processing D&D rulebooks:
-RU: Этот модуль содержит три основных конвейера для обработки книг правил D&D:
+EN: This module contains the ingestion pipelines used in the modern two-step flow:
+RU: Этот модуль содержит конвейеры загрузки, используемые в современном двухэтапном процессе:
 
 EN: 1. parse_docs_pipeline: Convert PDF files to Markdown format
 RU: 1. parse_docs_pipeline: Конвертирует PDF файлы в формат Markdown
@@ -13,13 +13,16 @@ RU: 1. parse_docs_pipeline: Конвертирует PDF файлы в форм�
 EN: 2. normalize_md_dir_pipeline: Clean and standardize Markdown files
 RU: 2. normalize_md_dir_pipeline: Очищает и стандартизирует Markdown файлы
 
-EN: 3. chunk_docs_pipeline: Split documents into searchable chunks with metadata
-RU: 3. chunk_docs_pipeline: Разбивает документы на чанки для поиска с метаданными
+EN: 3. sections_from_md_pipeline: Split normalized Markdown into structural sections
+RU: 3. sections_from_md_pipeline: Делит нормализованный Markdown на структурные секции
+
+EN: 4. chunks_from_sections_pipeline: Apply token-based chunking to sections
+RU: 4. chunks_from_sections_pipeline: Применяет токеновый чанкинг к секциям
 
 EN: These pipelines are designed to work sequentially:
-    PDF → Markdown → Normalized Markdown → JSON chunks
+    PDF → Markdown → Normalized Markdown → Sections JSONL → Chunks JSONL
 RU: Эти конвейеры предназначены для последовательной работы:
-    PDF → Markdown → Нормализованный Markdown → JSON чанки
+    PDF → Markdown → Нормализованный Markdown → JSONL секции → JSONL чанки
     
 EN: Each pipeline is idempotent and can be run multiple times safely.
 RU: Каждый конвейер идемпотентен и может быть запущен несколько раз безопасно.
@@ -29,16 +32,13 @@ RU: Каждый конвейер идемпотентен и может быт�
 from __future__ import annotations
 
 import json
-import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence
 
 # EN: Import functions for working with files and text processing
 # RU: Импортируем функции для работы с файлами и обработки текста
 from .io import (
-    Section,
-    chunk_sections,
-    iter_markdown_sections,
     normalize_markdown,
     deep_normalize_markdown,
     parse_pdf_to_markdown,
@@ -54,6 +54,9 @@ from .config import (
 )
 from .section_parser import iter_structural_sections, to_dict as section_to_dict
 from .chunking import SectionRecord, split_sections_into_chunks
+from .retriever import FilterLike, RetrievedChunk, Retriever
+from dnd_rag.providers.embeddings import embed_texts
+from dnd_rag.providers.llm import ChatMessage, LLMClient
 
 
 # ============================================================================
@@ -85,6 +88,71 @@ def _detect_book_code(pdf_name: str) -> str:
     # EN: If no match found, use the filename (without extension) in uppercase
     # RU: Если совпадений не найдено, используем имя файла (без расширения) в верхнем регистре
     return Path(pdf_name).stem.upper()
+
+
+_DEFAULT_SYSTEM_PROMPT = (
+    "Ты — эксперт по правилам Dungeons & Dragons 5e. Отвечай только фактами из "
+    "предоставленного контекста. Если информации недостаточно, честно скажи об этом. "
+    "Всегда добавляй ссылки на источники в формате [номер]."
+)
+
+
+@dataclass
+class AnswerResult:
+    """LLM answer together with retrieved chunks."""
+
+    answer: str
+    model: str
+    prompt_tokens: Optional[int]
+    completion_tokens: Optional[int]
+    total_tokens: Optional[int]
+    chunks: List[RetrievedChunk]
+
+
+def _safe_truncate(text: str, max_chars: int) -> str:
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip() + "…"
+
+
+def _format_source_title(payload: Dict[str, Any]) -> str:
+    book = payload.get("book_title") or payload.get("book") or ""
+    chapter = payload.get("chapter_title") or payload.get("chapter") or ""
+    sections = payload.get("section_path") or []
+    if isinstance(sections, list):
+        sections_str = " › ".join([s for s in sections if s])
+    else:
+        sections_str = str(sections)
+
+    parts = [part for part in (book, chapter, sections_str) if part]
+    chunk_id = payload.get("chunk_id")
+    if chunk_id:
+        parts.append(f"id={chunk_id}")
+    return " • ".join(parts) if parts else (chunk_id or "fragment")
+
+
+def _render_context(chunks: List[RetrievedChunk], *, max_chars_per_chunk: int) -> str:
+    blocks: List[str] = []
+    for idx, chunk in enumerate(chunks, start=1):
+        text = (chunk.text or "").strip()
+        if not text:
+            text = "⚠️ Текст отсутствует в payload (переиндексируйте с полем text)."
+        text = _safe_truncate(text, max_chars_per_chunk)
+        title = _format_source_title(chunk.payload)
+        blocks.append(f"[{idx}] {title}\n{text}")
+    return "\n\n".join(blocks)
+
+
+def _build_user_prompt(question: str, context_block: str) -> str:
+    return (
+        "Ответь на вопрос, используя только приведённые ниже выдержки из правил.\n"
+        "Если ответа нет, скажи об этом напрямую.\n"
+        "Каждое утверждение подтверждай ссылкой на источник вида [номер], где номер — блок из раздела «Контекст».\n\n"
+        f"Контекст:\n{context_block}\n\n"
+        f"Вопрос: {question}\n\n"
+        "Формат ответа: связный текст на языке вопроса с пометками [номер]. "
+        "После ответа можешь кратко перечислить использованные источники."
+    )
 
 
 # ============================================================================
@@ -242,163 +310,6 @@ def normalize_md_dir_pipeline(
 
 
 # ============================================================================
-# EN: Helper function to create URL-friendly text (slug)
-# RU: Вспомогательная функция для создания URL-дружественного текста (slug)
-# ============================================================================
-def _slugify(text: str) -> str:
-    """
-    EN: Convert text to a clean slug (URL-friendly format).
-    RU: Преобразует текст в чистый slug (формат, подходящий для URL).
-    
-    EN: Example: "Chapter 1: Magic Items!" → "Chapter-1-Magic-Items"
-    RU: Пример: "Глава 1: Магические предметы!" → "Глава-1-Магические-предметы"
-    """
-    # EN: Remove all special characters except letters, numbers, hyphens, spaces, colons, underscores
-    # RU: Удаляем все специальные символы кроме букв, цифр, дефисов, пробелов, двоеточий, подчёркиваний
-    t = re.sub(r"[^A-Za-z0-9А-Яа-я\-\s:_]", "", text)
-    
-    # EN: Replace all whitespace sequences with a single hyphen
-    # RU: Заменяем все последовательности пробелов на один дефис
-    t = re.sub(r"\s+", "-", t).strip("-")
-    
-    # EN: Limit to 60 characters for reasonable ID length
-    # RU: Ограничиваем до 60 символов для разумной длины ID
-    return t[:60]
-
-
-# ============================================================================
-# EN: PIPELINE 3: Split Markdown documents into chunks for search/retrieval
-# RU: КОНВЕЙЕР 3: Разбиение Markdown документов на чанки для поиска/извлечения
-# ============================================================================
-def chunk_docs_pipeline(
-    md_dir: str | Path,
-    out_chunks_dir: str | Path,
-    *,
-    config_path: Optional[str | Path] = None,
-) -> List[Path]:
-    """
-    EN: Split Markdown documents into smaller overlapping chunks for better search.
-    RU: Разбивает Markdown документы на меньшие перекрывающиеся чанки для лучшего поиска.
-    
-    EN: This is essential for RAG (Retrieval-Augmented Generation) systems.
-        Each chunk gets a unique ID and metadata (chapter, section, pages, etc.).
-    RU: Это необходимо для RAG (генерация с дополнением извлечением) систем.
-        Каждый чанк получает уникальный ID и метаданные (глава, раздел, страницы и т.д.).
-    
-    Parameters / Параметры:
-    ----------------------
-    md_dir: EN: Directory containing normalized Markdown files
-            RU: Директория с нормализованными Markdown файлами
-    out_chunks_dir: EN: Directory where JSONL chunk files will be saved
-                    RU: Директория, куда будут сохранены JSONL файлы с чанками
-    config_path: EN: Optional configuration file path (defines chunk size, overlap, etc.)
-                 RU: Необязательный путь к файлу конфигурации (определяет размер чанка, перекрытие и т.д.)
-    
-    Returns / Возвращает:
-    --------------------
-    EN: List of paths to created JSONL files (one per book)
-    RU: Список путей к созданным JSONL файлам (по одному на книгу)
-    """
-    # EN: Load configuration to get chunk size and overlap settings
-    # RU: Загружаем конфигурацию для получения настроек размера чанка и перекрытия
-    cfg: IngestConfig = load_ingest_config(config_path or DEFAULT_CONFIG_PATH)
-
-    # EN: Convert paths to Path objects
-    # RU: Конвертируем пути в объекты Path
-    md_p = Path(md_dir)
-    out_p = Path(out_chunks_dir)
-    
-    # EN: Create output directory if it doesn't exist
-    # RU: Создаём выходную директорию, если её нет
-    out_p.mkdir(parents=True, exist_ok=True)
-
-    # EN: List to track all created files
-    # RU: Список для отслеживания всех созданных файлов
-    produced: List[Path] = []
-    
-    # EN: Process each Markdown file (each represents one book)
-    # RU: Обрабатываем каждый Markdown файл (каждый представляет одну книгу)
-    for md_file in sorted(md_p.glob("*.md")):
-        # EN: Extract book code from filename (e.g., "PHB.md" → "PHB")
-        # RU: Извлекаем код книги из имени файла (например, "PHB.md" → "PHB")
-        book = md_file.stem.upper()
-        
-        # EN: Read the entire Markdown file content
-        # RU: Читаем всё содержимое Markdown файла
-        md = md_file.read_text(encoding="utf-8")
-        
-        # EN: Parse the Markdown into logical sections (by headers)
-        # RU: Парсим Markdown в логические разделы (по заголовкам)
-        sections: Iterable[Section] = iter_markdown_sections(md)
-        
-        # EN: Split sections into smaller chunks with overlap for better context
-        # RU: Разбиваем разделы на меньшие чанки с перекрытием для лучшего контекста
-        chunks = chunk_sections(
-            sections,
-            max_tokens=cfg.chunk_size_tokens,  # EN: Max size per chunk | RU: Макс. размер на чанк
-            overlap=cfg.chunk_overlap_tokens,  # EN: Tokens to overlap between chunks | RU: Токены для перекрытия между чанками
-        )
-
-        # EN: List to store all chunk data as dictionaries
-        # RU: Список для хранения всех данных чанков в виде словарей
-        rows = []
-        
-        # EN: Process each chunk and create metadata
-        # RU: Обрабатываем каждый чанк и создаём метаданные
-        for i, ch in enumerate(chunks, start=1):
-            # EN: Extract chapter name (or empty string if not available)
-            # RU: Извлекаем название главы (или пустую строку, если недоступно)
-            chapter = ch.chapter or ""
-            
-            # EN: Extract section name (or empty string if not available)
-            # RU: Извлекаем название раздела (или пустую строку, если недоступно)
-            sec = ch.section or ""
-            
-            # EN: Create page range string (e.g., "15-17") if pages are available
-            # RU: Создаём строку диапазона страниц (например, "15-17"), если страницы доступны
-            page_range = (
-                f"{ch.page_start}-{ch.page_end}"
-                if ch.page_start is not None and ch.page_end is not None
-                else ""
-            )
-            
-            # EN: Create unique chunk ID with format: BOOK:chapter-slug:section-slug:pages:index
-            # RU: Создаём уникальный ID чанка с форматом: КНИГА:slug-главы:slug-раздела:страницы:индекс
-            # EN: Example: "PHB:Chapter-3-Classes:Barbarian:45-47:0001"
-            # RU: Пример: "PHB:Глава-3-Классы:Варвар:45-47:0001"
-            cid = f"{book}:{_slugify(chapter)}:{_slugify(sec)}:{page_range}:{i:04d}"
-            
-            # EN: Create a dictionary with all chunk information
-            # RU: Создаём словарь со всей информацией о чанке
-            rows.append(
-                {
-                    "id": cid,                      # EN: Unique identifier | RU: Уникальный идентификатор
-                    "book": book,                   # EN: Book code | RU: Код книги
-                    "chapter": chapter or None,     # EN: Chapter name | RU: Название главы
-                    "section": sec or None,         # EN: Section name | RU: Название раздела
-                    "page_start": ch.page_start,    # EN: First page | RU: Первая страница
-                    "page_end": ch.page_end,        # EN: Last page | RU: Последняя страница
-                    "text": ch.text,                # EN: Actual chunk text | RU: Фактический текст чанка
-                    "tokens": ch.tokens,            # EN: Token count | RU: Количество токенов
-                    "source_md": str(md_file.as_posix()),  # EN: Source file path | RU: Путь к исходному файлу
-                }
-            )
-
-        # EN: Save all chunks for this book to a JSONL file (one JSON object per line)
-        # RU: Сохраняем все чанки для этой книги в JSONL файл (один JSON объект на строку)
-        out_file = out_p / f"{book}.jsonl"
-        save_jsonl(rows, out_file)
-        
-        # EN: Add to list of created files
-        # RU: Добавляем в список созданных файлов
-        produced.append(out_file)
-
-    # EN: Return all created JSONL file paths
-    # RU: Возвращаем все созданные пути JSONL файлов
-    return produced
-
-
-# ============================================================================
 # RU: НОВЫЙ ПАЙПЛАЙН — Секции (без резки): MD → sections/*.jsonl
 # EN: NEW PIPELINE — Structural sections: MD → sections/*.jsonl
 # ============================================================================
@@ -477,4 +388,65 @@ def chunks_from_sections_pipeline(
         produced.append(out_file)
 
     return produced
+
+
+def answer_query_pipeline(
+    question: str,
+    *,
+    collection: str = "dnd_rule_assistant",
+    host: str = "localhost",
+    port: int = 6333,
+    k: int = 5,
+    config_path: Optional[str | Path] = None,
+    filters: FilterLike = None,
+    retriever: Optional[Retriever] = None,
+    llm_client: Optional[LLMClient] = None,
+    system_prompt: Optional[str] = None,
+    embedding_model: str = "text-embedding-3-small",
+    temperature: Optional[float] = None,
+    max_chars_per_chunk: int = 1500,
+) -> AnswerResult:
+    """
+    High-level pipeline: question → retrieval → LLM answer.
+
+    RU: Высокоуровневый пайплайн: вопрос → поиск → ответ LLM.
+    """
+
+    if not question.strip():
+        raise ValueError("Вопрос не может быть пустым.")
+
+    cfg = load_ingest_config(config_path or DEFAULT_CONFIG_PATH)
+    retr = retriever or Retriever(collection=collection, host=host, port=port)
+    llm = llm_client or LLMClient(model=cfg.llm_model_name)
+
+    query_vec = embed_texts([question], model=embedding_model)[0]
+    retrieved = retr.search(query_vec, limit=k, query_filter=filters)
+
+    if not retrieved:
+        return AnswerResult(
+            answer="Не удалось найти релевантные фрагменты в Qdrant.",
+            model=llm.model,
+            prompt_tokens=None,
+            completion_tokens=None,
+            total_tokens=None,
+            chunks=[],
+        )
+
+    context_block = _render_context(retrieved, max_chars_per_chunk=max_chars_per_chunk)
+    sys_prompt = system_prompt or _DEFAULT_SYSTEM_PROMPT
+    messages: List[ChatMessage] = []
+    if sys_prompt:
+        messages.append(ChatMessage(role="system", content=sys_prompt))
+    messages.append(ChatMessage(role="user", content=_build_user_prompt(question, context_block)))
+
+    llm_response = llm.generate(messages, temperature=temperature)
+
+    return AnswerResult(
+        answer=llm_response.content,
+        model=llm_response.model,
+        prompt_tokens=llm_response.prompt_tokens,
+        completion_tokens=llm_response.completion_tokens,
+        total_tokens=llm_response.total_tokens,
+        chunks=retrieved,
+    )
 

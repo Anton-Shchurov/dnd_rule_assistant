@@ -80,6 +80,10 @@ class IngestConfig(BaseModel):
     # По умолчанию: True
     include_image_captions: bool = False
 
+    # Default LLM model name used for answering queries
+    # Название LLM по умолчанию, используемой для ответов
+    llm_model_name: str = "gpt-5-mini"
+
 
 # ==============================================================================
 # Environment variable overrides class
@@ -117,6 +121,7 @@ class EnvIngestOverrides(BaseSettings):
     min_paragraph_chars: Optional[int] = None
     keep_tables_as_blocks: Optional[bool] = None
     include_image_captions: Optional[bool] = None
+    llm_model_name: Optional[str] = None
 
 
 # ==============================================================================
@@ -217,7 +222,14 @@ def load_ingest_config(path: Optional[str | Path] = None) -> IngestConfig:
 
     # Extract the 'ingest' section from YAML, or use the whole dict if no section exists
     # Извлекаем секцию 'ingest' из YAML, или используем весь словарь, если секции нет
-    params = data.get("ingest", data) if isinstance(data, dict) else {}
+    base_params = data.get("ingest", data) if isinstance(data, dict) else {}
+    params = dict(base_params) if isinstance(base_params, dict) else {}
+
+    # Extract llm.model_name into flat field if provided
+    if isinstance(data, dict):
+        llm_block = data.get("llm")
+        if isinstance(llm_block, dict) and "model_name" in llm_block:
+            params.setdefault("llm_model_name", llm_block.get("model_name"))
     
     # Create IngestConfig object with parameters from YAML file
     # Создаём объект IngestConfig с параметрами из YAML-файла

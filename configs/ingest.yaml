@@ -107,4 +107,12 @@ ingest:
   # ------------------------------------------------------------------------
   include_image_captions: true
 
-
+# ------------------------------------------------------------------------------
+# llm: Default language model to use for answers (OpenAI model name)
+# llm: Модель LLM по умолчанию для ответов (название модели OpenAI)
+# ------------------------------------------------------------------------------
+# You can override it with INGEST_LLM_MODEL_NAME or CLI options later.
+# Можно переопределить через INGEST_LLM_MODEL_NAME или аргументы CLI.
+# ------------------------------------------------------------------------------
+llm:
+  model_name: gpt-5-mini

@@ -53,6 +53,7 @@ dnd_rule_assistant/
     - bot.py: Telegram-бот (aiogram), команда /ask <вопрос>.
     - cli.py: CLI (Typer) — check-env, init-qdrant, ingest, query.
 - configs/: (опционально) YAML/JSON-конфиги; приоритет у .env.
+  - `ingest.yaml`: параметры чанкинга (размер, overlap, таблицы) и секция `llm.model_name` с моделью OpenAI по умолчанию (`gpt-5-mini`, можно переопределить через `INGEST_LLM_MODEL_NAME`).
 - notebooks/: исследования — чанкинг, качество поиска, промпты.
 - tests/: автоматические тесты (smoke/интеграционные для пайплайна и ретривера).
 - scripts/: инженерные утилиты (тонкие обёртки над функциями из src/interfaces/cli.py).
@@ -89,3 +90,16 @@ dnd_rule_assistant/
 
 - Индексация чанков (OpenAI text-embedding-3-small, ключ в `OPENAI_API_KEY`):
   - `poetry run python -m dnd_rag.interfaces.cli index --collection dnd_rule_assistant --chunks data/processed/chunks/DMG.jsonl data/processed/chunks/PHB.jsonl`
+
+### CLI-вопросы (RAG)
+
+- Спросить ассистента напрямую:
+  - `poetry run python -m dnd_rag.interfaces.cli ask "Как создаются персонажи?" --k 4`
+- Можно переопределить модель:
+  - `poetry run python -m dnd_rag.interfaces.cli ask "What is advantage?" --llm-model gpt-5-mini`
+
+### Telegram-бот
+
+1. Задайте токен и параметры подключения (`TELEGRAM_BOT_TOKEN`, при необходимости `QDRANT_HOST/PORT/COLLECTION`).
+2. Запустите `poetry run python -m dnd_rag.interfaces.bot`.
+3. В Telegram используйте `/ask <вопрос>`; бот вернёт ответ и список источников.

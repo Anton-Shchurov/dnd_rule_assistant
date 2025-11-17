@@ -2,21 +2,23 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import typer
 from rich import print
 from rich.table import Table
 
 from dnd_rag.core.pipelines import (
-    chunk_docs_pipeline,
     parse_docs_pipeline,
     sections_from_md_pipeline,
     chunks_from_sections_pipeline,
+    answer_query_pipeline,
+    AnswerResult,
 )
 from dnd_rag.core.config import DEFAULT_CONFIG_PATH
 from dnd_rag.providers.vectorstore import get_client, ensure_collection, upsert_vectors
 from dnd_rag.providers.embeddings import embed_texts
+from dnd_rag.providers.llm import LLMClient
 
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
@@ -31,17 +33,6 @@ def docs_parse(
     produced = parse_docs_pipeline(in_dir, out_dir, ocr=ocr)
     for p in produced:
         print(f"[green]MD сохранён[/green]: {p}")
-
-
-@app.command("docs-chunk")
-def docs_chunk(
-    in_dir: Path = typer.Option(Path("data/processed/md"), "--in", help="Папка с Markdown"),
-    out_dir: Path = typer.Option(Path("data/processed/chunks"), "--out", help="Папка для JSONL чанков"),
-    config: Path = typer.Option(DEFAULT_CONFIG_PATH, "--config", help="Путь к YAML-конфигу"),
-):
-    produced = chunk_docs_pipeline(in_dir, out_dir, config_path=config)
-    for p in produced:
-        print(f"[green]Chunks сохранены[/green]: {p}")
 
 
 @app.command("sections")
@@ -74,6 +65,45 @@ def _read_jsonl(path: Path) -> List[dict]:
                 continue
             rows.append(json.loads(line))
     return rows
+
+
+def _format_meta(payload: dict) -> str:
+    book = payload.get("book_title") or payload.get("book") or ""
+    chapter = payload.get("chapter_title") or payload.get("chapter") or ""
+    sec_path = payload.get("section_path") or []
+    if isinstance(sec_path, list):
+        sec_path = " › ".join([s for s in sec_path if s])
+    parts = [part for part in (book, chapter, sec_path) if part]
+    chunk_id = payload.get("chunk_id")
+    if chunk_id:
+        parts.append(f"id={chunk_id}")
+    return " / ".join(parts) if parts else (chunk_id or "—")
+
+
+def _print_answer(result: AnswerResult) -> None:
+    print("[bold cyan]Ответ[/bold cyan]:")
+    print(result.answer.strip())
+    print()
+
+    if result.chunks:
+        table = Table(title="Источники")
+        table.add_column("#", justify="right", style="cyan")
+        table.add_column("Описание")
+        table.add_column("Фрагмент")
+        for idx, chunk in enumerate(result.chunks, start=1):
+            preview = (chunk.text or "").replace("\n", " ").strip()
+            if len(preview) > 140:
+                preview = preview[:140].rstrip() + "…"
+            table.add_row(str(idx), _format_meta(chunk.payload), preview or "—")
+        print(table)
+    else:
+        print("[yellow]Источники не найдены[/yellow]")
+
+    if result.total_tokens is not None:
+        print(
+            f"[dim]Tokens: prompt={result.prompt_tokens} "
+            f"completion={result.completion_tokens} total={result.total_tokens}[/dim]"
+        )
 
 
 @app.command("docs-sample")
@@ -125,6 +155,39 @@ def docs_sample(
     print(table)
 
 
+@app.command("ask")
+def ask_cmd(
+    question: str = typer.Argument(..., help="Вопрос пользователя"),
+    collection: str = typer.Option("dnd_rule_assistant", "--collection", help="Имя коллекции Qdrant"),
+    host: str = typer.Option("localhost", "--host", envvar="QDRANT_HOST"),
+    port: int = typer.Option(6333, "--port", envvar="QDRANT_PORT"),
+    k: int = typer.Option(5, "--k", help="Количество фрагментов контекста"),
+    config: Path = typer.Option(DEFAULT_CONFIG_PATH, "--config", help="Путь к ingest.yaml"),
+    embedding_model: str = typer.Option(
+        "text-embedding-3-small", "--embedding-model", help="Модель эмбеддингов OpenAI"
+    ),
+    llm_model: Optional[str] = typer.Option(None, "--llm-model", help="Переопределить модель LLM"),
+    temperature: Optional[float] = typer.Option(None, "--temperature", help="Температура LLM"),
+):
+    if not question.strip():
+        typer.secho("Вопрос не должен быть пустым.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    llm_client = LLMClient(model=llm_model) if llm_model else None
+    result = answer_query_pipeline(
+        question,
+        collection=collection,
+        host=host,
+        port=port,
+        k=k,
+        config_path=config,
+        llm_client=llm_client,
+        embedding_model=embedding_model,
+        temperature=temperature,
+    )
+    _print_answer(result)
+
+
 @app.command("init-qdrant")
 def init_qdrant(
     collection: str = typer.Option("dnd_rule_assistant", "--collection", help="Имя коллекции"),
@@ -165,6 +228,7 @@ def index_cmd(
                 "chapter_title": r.get("chapter_title", ""),
                 "section_path": r.get("section_path", []),
                 "chunk_index": r.get("chunk_index", 0),
+                "text": r.get("text", ""),
             }
         )
 
