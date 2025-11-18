@@ -38,7 +38,7 @@ def _coerce_filter(filter_like: FilterLike) -> Optional[Filter]:
 
 
 class Retriever:
-    """Simple wrapper around qdrant_client.search."""
+    """Thin wrapper around Qdrant client search primitives."""
 
     def __init__(
         self,
@@ -88,18 +88,30 @@ class Retriever:
         filter_obj = _coerce_filter(query_filter)
         params = search_params or self.default_search_params
 
-        results = self._client.search(
-            collection_name=self.collection,
-            query_vector=query_vector,
-            limit=limit,
-            with_payload=with_payload,
-            search_params=params,
-            query_filter=filter_obj,
-            score_threshold=score_threshold,
-        )
+        if hasattr(self._client, "query_points"):
+            response = self._client.query_points(
+                collection_name=self.collection,
+                query=query_vector,
+                limit=limit,
+                with_payload=with_payload,
+                search_params=params,
+                query_filter=filter_obj,
+                score_threshold=score_threshold,
+            )
+            points = response.points
+        else:  # pragma: no cover - поддержка старых версий клиента
+            points = self._client.search(
+                collection_name=self.collection,
+                query_vector=query_vector,
+                limit=limit,
+                with_payload=with_payload,
+                search_params=params,
+                query_filter=filter_obj,
+                score_threshold=score_threshold,
+            )
 
         retrieved: List[RetrievedChunk] = []
-        for point in results:
+        for point in points:
             score = point.score if point.score is not None else 0.0
             if score_threshold is not None and score < score_threshold:
                 continue
@@ -117,3 +129,4 @@ class Retriever:
                 )
             )
         return retrieved
+

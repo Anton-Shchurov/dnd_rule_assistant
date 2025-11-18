@@ -54,6 +54,7 @@ dnd_rule_assistant/
     - cli.py: CLI (Typer) — check-env, init-qdrant, ingest, query.
 - configs/: (опционально) YAML/JSON-конфиги; приоритет у .env.
   - `ingest.yaml`: параметры чанкинга (размер, overlap, таблицы) и секция `llm.model_name` с моделью OpenAI по умолчанию (`gpt-5-mini`, можно переопределить через `INGEST_LLM_MODEL_NAME`).
+  - `prompts.yaml`: системный промпт для answer‑пайплайна (редактируется без правок кода).
 - notebooks/: исследования — чанкинг, качество поиска, промпты.
 - tests/: автоматические тесты (smoke/интеграционные для пайплайна и ретривера).
 - scripts/: инженерные утилиты (тонкие обёртки над функциями из src/interfaces/cli.py).

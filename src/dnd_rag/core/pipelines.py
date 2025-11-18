@@ -55,6 +55,7 @@ from .config import (
 from .section_parser import iter_structural_sections, to_dict as section_to_dict
 from .chunking import SectionRecord, split_sections_into_chunks
 from .retriever import FilterLike, RetrievedChunk, Retriever
+from .prompts import get_system_prompt
 from dnd_rag.providers.embeddings import embed_texts
 from dnd_rag.providers.llm import ChatMessage, LLMClient
 
@@ -88,13 +89,6 @@ def _detect_book_code(pdf_name: str) -> str:
     # EN: If no match found, use the filename (without extension) in uppercase
     # RU: Если совпадений не найдено, используем имя файла (без расширения) в верхнем регистре
     return Path(pdf_name).stem.upper()
-
-
-_DEFAULT_SYSTEM_PROMPT = (
-    "Ты — эксперт по правилам Dungeons & Dragons 5e. Отвечай только фактами из "
-    "предоставленного контекста. Если информации недостаточно, честно скажи об этом. "
-    "Всегда добавляй ссылки на источники в формате [номер]."
-)
 
 
 @dataclass
@@ -402,6 +396,7 @@ def answer_query_pipeline(
     retriever: Optional[Retriever] = None,
     llm_client: Optional[LLMClient] = None,
     system_prompt: Optional[str] = None,
+    prompts_path: Optional[str | Path] = None,
     embedding_model: str = "text-embedding-3-small",
     temperature: Optional[float] = None,
     max_chars_per_chunk: int = 1500,
@@ -433,7 +428,7 @@ def answer_query_pipeline(
         )
 
     context_block = _render_context(retrieved, max_chars_per_chunk=max_chars_per_chunk)
-    sys_prompt = system_prompt or _DEFAULT_SYSTEM_PROMPT
+    sys_prompt = system_prompt if system_prompt is not None else get_system_prompt(prompts_path)
     messages: List[ChatMessage] = []
     if sys_prompt:
         messages.append(ChatMessage(role="system", content=sys_prompt))

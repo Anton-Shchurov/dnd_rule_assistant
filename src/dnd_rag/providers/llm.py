@@ -46,7 +46,7 @@ class LLMClient:
         self,
         model: str,
         *,
-        temperature: float = 0.1,
+        temperature: Optional[float] = None,
         max_output_tokens: Optional[int] = None,
         client: Optional[OpenAI] = None,
     ) -> None:
@@ -82,12 +82,15 @@ class LLMClient:
             eff_max_tokens,
         )
 
-        response = self._client.chat.completions.create(
-            model=self.model,
-            messages=payload,
-            temperature=eff_temperature,
-            max_tokens=eff_max_tokens,
-        )
+        request_kwargs = {
+            "model": self.model,
+            "messages": payload,
+            "temperature": eff_temperature,
+        }
+        if eff_max_tokens is not None:
+            request_kwargs["max_tokens"] = eff_max_tokens
+
+        response = self._client.chat.completions.create(**request_kwargs)
         choice = response.choices[0]
         content = choice.message.content or ""
         usage = getattr(response, "usage", None)
