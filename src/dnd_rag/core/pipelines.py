@@ -384,7 +384,7 @@ def chunks_from_sections_pipeline(
     return produced
 
 
-def answer_query_pipeline(
+async def answer_query_pipeline(
     question: str,
     *,
     collection: str = "dnd_rule_assistant",
@@ -400,11 +400,12 @@ def answer_query_pipeline(
     embedding_model: str = "text-embedding-3-small",
     temperature: Optional[float] = None,
     max_chars_per_chunk: int = 1500,
+    rerank: bool = True,
 ) -> AnswerResult:
     """
-    High-level pipeline: question → retrieval → LLM answer.
+    High-level pipeline: question → retrieval → reranking → LLM answer.
 
-    RU: Высокоуровневый пайплайн: вопрос → поиск → ответ LLM.
+    RU: Высокоуровневый пайплайн: вопрос → поиск → переранжирование → ответ LLM.
     """
 
     if not question.strip():
@@ -415,7 +416,10 @@ def answer_query_pipeline(
     llm = llm_client or LLMClient(model=cfg.llm_model_name)
 
     query_vec = embed_texts([question], model=embedding_model)[0]
-    retrieved = retr.search(query_vec, limit=k, query_filter=filters)
+    
+    # Retrieve more candidates for reranking
+    initial_k = k * 4 if rerank else k
+    retrieved = await retr.search(query_vec, limit=initial_k, query_filter=filters)
 
     if not retrieved:
         return AnswerResult(
@@ -427,6 +431,21 @@ def answer_query_pipeline(
             chunks=[],
         )
 
+    # Reranking step
+    if rerank:
+        from .reranker import Reranker
+        # Initialize reranker (cached if possible, but here we init every time for simplicity 
+        # or we could pass it as dependency. For now, simple init is fine as model loads are cached by library usually)
+        # Better: use a singleton or pass it in. Given the scope, I'll init it here.
+        # Note: CrossEncoder loads model into memory. Repeated init might be slow if not cached.
+        # Ideally, Reranker should be passed or initialized once.
+        # For this refactor, I will instantiate it here, but in production it should be persistent.
+        # To avoid re-loading weights every request, we rely on sentence-transformers internal caching 
+        # or we should move Reranker init outside.
+        # Let's instantiate it here for now, but maybe add a TODO.
+        reranker = Reranker()
+        retrieved = reranker.rerank(question, retrieved, top_n=k)
+
     context_block = _render_context(retrieved, max_chars_per_chunk=max_chars_per_chunk)
     sys_prompt = system_prompt if system_prompt is not None else get_system_prompt(prompts_path)
     messages: List[ChatMessage] = []
@@ -434,7 +453,7 @@ def answer_query_pipeline(
         messages.append(ChatMessage(role="system", content=sys_prompt))
     messages.append(ChatMessage(role="user", content=_build_user_prompt(question, context_block)))
 
-    llm_response = llm.generate(messages, temperature=temperature)
+    llm_response = await llm.generate(messages, temperature=temperature)
 
     return AnswerResult(
         answer=llm_response.content,

@@ -9,7 +9,6 @@ from typing import Optional
 
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
-from aiogram.filters.command import CommandObject
 from aiogram.types import Message
 from dotenv import find_dotenv, load_dotenv
 
@@ -48,34 +47,35 @@ def _format_meta(result: AnswerResult) -> str:
     return "\n".join(lines)
 
 
-def _answer_sync(question: str) -> AnswerResult:
-    return answer_query_pipeline(
-        question,
-        collection=QDRANT_COLLECTION,
-        host=QDRANT_HOST,
-        port=QDRANT_PORT,
-        config_path=DEFAULT_CONFIG_PATH,
-    )
 
+
+
+from aiogram import F
 
 @dp.message(Command("start", "help"))
 async def cmd_start(message: Message) -> None:
     await message.answer(
         "Привет! Я D&D Rule Assistant.\n"
-        "Используй команду /ask <вопрос>, чтобы получить ответ из базы правил."
+        "Просто напиши мне свой вопрос, и я найду ответ в правилах."
     )
 
 
-@dp.message(Command("ask"))
-async def cmd_ask(message: Message, command: CommandObject) -> None:
-    question = (command.args or "").strip()
+@dp.message(F.text)
+async def handle_message(message: Message) -> None:
+    question = (message.text or "").strip()
     if not question:
-        await message.answer("Использование: /ask <вопрос>")
         return
 
     await message.answer("🔍 Ищу ответ в базе…")
     try:
-        result = await asyncio.to_thread(_answer_sync, question)
+        # Now calling async pipeline directly
+        result = await answer_query_pipeline(
+            question,
+            collection=QDRANT_COLLECTION,
+            host=QDRANT_HOST,
+            port=QDRANT_PORT,
+            config_path=DEFAULT_CONFIG_PATH,
+        )
     except Exception as exc:  # pragma: no cover - сеть/ключи
         logger.exception("Failed to answer via pipeline", exc_info=exc)
         await message.answer("Произошла ошибка при обращении к ассистенту.")

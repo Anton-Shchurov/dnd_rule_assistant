@@ -168,13 +168,16 @@ def ask_cmd(
     ),
     llm_model: Optional[str] = typer.Option(None, "--llm-model", help="Переопределить модель LLM"),
     temperature: Optional[float] = typer.Option(None, "--temperature", help="Температура LLM"),
+    rerank: bool = typer.Option(True, "--rerank/--no-rerank", help="Использовать переранжирование"),
 ):
     if not question.strip():
         typer.secho("Вопрос не должен быть пустым.", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
     llm_client = LLMClient(model=llm_model) if llm_model else None
-    result = answer_query_pipeline(
+    
+    import asyncio
+    result = asyncio.run(answer_query_pipeline(
         question,
         collection=collection,
         host=host,
@@ -184,7 +187,8 @@ def ask_cmd(
         llm_client=llm_client,
         embedding_model=embedding_model,
         temperature=temperature,
-    )
+        rerank=rerank,
+    ))
     _print_answer(result)
 
 

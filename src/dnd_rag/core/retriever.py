@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Union
 
-from qdrant_client import QdrantClient
+from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import Filter, SearchParams
 
 
@@ -38,12 +38,12 @@ def _coerce_filter(filter_like: FilterLike) -> Optional[Filter]:
 
 
 class Retriever:
-    """Thin wrapper around Qdrant client search primitives."""
+    """Thin wrapper around Qdrant client search primitives (Async)."""
 
     def __init__(
         self,
         *,
-        client: Optional[QdrantClient] = None,
+        client: Optional[AsyncQdrantClient] = None,
         collection: str = "dnd_rule_assistant",
         host: str = "localhost",
         port: int = 6333,
@@ -52,7 +52,7 @@ class Retriever:
         """
         Parameters
         ----------
-        client: Optional[QdrantClient]
+        client: Optional[AsyncQdrantClient]
             Existing client instance (для тестов). Если не задан, будет создан.
         collection: str
             Название коллекции Qdrant.
@@ -62,11 +62,11 @@ class Retriever:
             Значения по умолчанию для SearchParams (например, hnsw_ef).
         """
 
-        self._client = client or QdrantClient(host=host, port=port)
+        self._client = client or AsyncQdrantClient(host=host, port=port)
         self.collection = collection
         self.default_search_params = default_search_params
 
-    def search(
+    async def search(
         self,
         query_vector: Sequence[float],
         *,
@@ -88,27 +88,17 @@ class Retriever:
         filter_obj = _coerce_filter(query_filter)
         params = search_params or self.default_search_params
 
-        if hasattr(self._client, "query_points"):
-            response = self._client.query_points(
-                collection_name=self.collection,
-                query=query_vector,
-                limit=limit,
-                with_payload=with_payload,
-                search_params=params,
-                query_filter=filter_obj,
-                score_threshold=score_threshold,
-            )
-            points = response.points
-        else:  # pragma: no cover - поддержка старых версий клиента
-            points = self._client.search(
-                collection_name=self.collection,
-                query_vector=query_vector,
-                limit=limit,
-                with_payload=with_payload,
-                search_params=params,
-                query_filter=filter_obj,
-                score_threshold=score_threshold,
-            )
+        # AsyncQdrantClient always has query_points (v1.7+)
+        response = await self._client.query_points(
+            collection_name=self.collection,
+            query=query_vector,
+            limit=limit,
+            with_payload=with_payload,
+            search_params=params,
+            query_filter=filter_obj,
+            score_threshold=score_threshold,
+        )
+        points = response.points
 
         retrieved: List[RetrievedChunk] = []
         for point in points:

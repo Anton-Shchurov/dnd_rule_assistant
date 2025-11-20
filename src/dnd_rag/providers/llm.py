@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Optional, Sequence
 
 from dotenv import find_dotenv, load_dotenv
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 _dotenv_path = find_dotenv(filename=".env", usecwd=True)
 if _dotenv_path:
@@ -40,7 +40,7 @@ class LLMResponse:
 
 
 class LLMClient:
-    """Thin wrapper around OpenAI Chat Completions API."""
+    """Thin wrapper around OpenAI Chat Completions API (Async)."""
 
     def __init__(
         self,
@@ -48,14 +48,14 @@ class LLMClient:
         *,
         temperature: Optional[float] = None,
         max_output_tokens: Optional[int] = None,
-        client: Optional[OpenAI] = None,
+        client: Optional[AsyncOpenAI] = None,
     ) -> None:
         self.model = model
         self.temperature = temperature
         self.max_output_tokens = max_output_tokens
-        self._client = client or OpenAI()
+        self._client = client or AsyncOpenAI()
 
-    def generate(
+    async def generate(
         self,
         messages: Sequence[ChatMessage],
         *,
@@ -90,7 +90,7 @@ class LLMClient:
         if eff_max_tokens is not None:
             request_kwargs["max_tokens"] = eff_max_tokens
 
-        response = self._client.chat.completions.create(**request_kwargs)
+        response = await self._client.chat.completions.create(**request_kwargs)
         choice = response.choices[0]
         content = choice.message.content or ""
         usage = getattr(response, "usage", None)
