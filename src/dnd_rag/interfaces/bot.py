@@ -7,7 +7,7 @@ import logging
 import os
 from typing import Optional
 
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message
 from dotenv import find_dotenv, load_dotenv
@@ -25,6 +25,7 @@ logging.basicConfig(level=logging.INFO)
 QDRANT_HOST = os.environ.get("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.environ.get("QDRANT_PORT", "6333"))
 QDRANT_COLLECTION = os.environ.get("QDRANT_COLLECTION", "dnd_rule_assistant")
+DEBUG_LOG = os.environ.get("DEBUG_LOG", "").lower() not in {"", "0", "false", "no"}
 
 dp = Dispatcher()
 
@@ -47,10 +48,38 @@ def _format_meta(result: AnswerResult) -> str:
     return "\n".join(lines)
 
 
+def _format_debug_block(result: AnswerResult) -> str:
+    diag = result.diagnostics
+    if not diag:
+        return "Диагностика недоступна."
+
+    def _fmt_score(value: Optional[float]) -> str:
+        return f"{value:.3f}" if value is not None else "—"
+
+    header = (
+        f"🛠 Диагностика\n"
+        f"retrieved={len(diag.retrieved)} initial_k={diag.initial_k} "
+        f"rerank={'on' if diag.rerank_enabled else 'off'} "
+        f"duration={int(diag.duration_ms or 0)}ms"
+    )
+    lines = [header, "Контекст:"]
+    if not diag.final_chunks:
+        lines.append("—")
+        return "\n".join(lines)
+
+    for chunk in diag.final_chunks:
+        sections = " › ".join(chunk.section_path) if chunk.section_path else ""
+        source_parts = [p for p in (chunk.book_title, chunk.chapter_title, sections) if p]
+        lines.append(
+            f"[{chunk.rank}] {chunk.chunk_id} "
+            f"vec={_fmt_score(chunk.vector_score)} rer={_fmt_score(chunk.rerank_score)} "
+            f"{' / '.join(source_parts) or ''}"
+        )
+    return "\n".join(lines)
 
 
 
-from aiogram import F
+
 
 @dp.message(Command("start", "help"))
 async def cmd_start(message: Message) -> None:
@@ -75,6 +104,8 @@ async def handle_message(message: Message) -> None:
             host=QDRANT_HOST,
             port=QDRANT_PORT,
             config_path=DEFAULT_CONFIG_PATH,
+            log_queries=DEBUG_LOG,
+            include_diagnostics=DEBUG_LOG,
         )
     except Exception as exc:  # pragma: no cover - сеть/ключи
         logger.exception("Failed to answer via pipeline", exc_info=exc)
@@ -84,6 +115,9 @@ async def handle_message(message: Message) -> None:
     text = result.answer.strip() or "Ответ пуст."
     sources = _format_meta(result)
     await message.answer(f"{text}\n\n{sources}", disable_web_page_preview=True)
+
+    if DEBUG_LOG and result.diagnostics:
+        await message.answer(_format_debug_block(result), disable_web_page_preview=True)
 
 
 async def _run_bot(token: str) -> None:

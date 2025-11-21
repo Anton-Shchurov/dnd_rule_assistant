@@ -32,7 +32,10 @@ RU: Каждый конвейер идемпотентен и может быт�
 from __future__ import annotations
 
 import json
+import logging
+import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -54,10 +57,14 @@ from .config import (
 )
 from .section_parser import iter_structural_sections, to_dict as section_to_dict
 from .chunking import SectionRecord, split_sections_into_chunks
+from .diagnostics import ChunkDiagnostics, QueryDiagnostics, write_query_log
 from .retriever import FilterLike, RetrievedChunk, Retriever
 from .prompts import get_system_prompt
 from dnd_rag.providers.embeddings import embed_texts
 from dnd_rag.providers.llm import ChatMessage, LLMClient
+
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================================
@@ -101,6 +108,7 @@ class AnswerResult:
     completion_tokens: Optional[int]
     total_tokens: Optional[int]
     chunks: List[RetrievedChunk]
+    diagnostics: Optional[QueryDiagnostics] = None
 
 
 def _safe_truncate(text: str, max_chars: int) -> str:
@@ -147,6 +155,52 @@ def _build_user_prompt(question: str, context_block: str) -> str:
         "Формат ответа: связный текст на языке вопроса с пометками [номер]. "
         "После ответа можешь кратко перечислить использованные источники."
     )
+
+
+def _serialize_filter(filter_like: FilterLike) -> Optional[Dict[str, Any]]:
+    if filter_like is None:
+        return None
+    if isinstance(filter_like, dict):
+        return filter_like
+    if hasattr(filter_like, "model_dump"):
+        try:
+            return filter_like.model_dump()
+        except Exception:  # pragma: no cover - защитный сценарий
+            return {"repr": repr(filter_like)}
+    return {"repr": repr(filter_like)}
+
+
+def _build_chunk_diagnostics(
+    chunks: Sequence[RetrievedChunk],
+    *,
+    vector_scores: Dict[str, Optional[float]],
+    rerank_scores: Dict[str, Optional[float]],
+) -> List[ChunkDiagnostics]:
+    diagnostics: List[ChunkDiagnostics] = []
+    for idx, chunk in enumerate(chunks, start=1):
+        diagnostics.append(
+            ChunkDiagnostics.from_chunk(
+                chunk,
+                rank=idx,
+                vector_score=vector_scores.get(chunk.chunk_id),
+                rerank_score=rerank_scores.get(chunk.chunk_id),
+            )
+        )
+    return diagnostics
+
+
+_NOT_FOUND_PREFIX = "к сожалению, в доступных правилах нет информации"
+
+
+def _answer_found(text: str) -> bool:
+    normalized = (text or "").strip().lower()
+    if not normalized:
+        return False
+    if normalized.startswith(_NOT_FOUND_PREFIX):
+        return False
+    if normalized.startswith("не удалось найти релевантные фрагменты"):
+        return False
+    return True
 
 
 # ============================================================================
@@ -401,6 +455,9 @@ async def answer_query_pipeline(
     temperature: Optional[float] = None,
     max_chars_per_chunk: int = 1500,
     rerank: bool = True,
+    log_queries: bool = False,
+    log_dir: str | Path = "logs/queries",
+    include_diagnostics: bool = False,
 ) -> AnswerResult:
     """
     High-level pipeline: question → retrieval → reranking → LLM answer.
@@ -415,52 +472,165 @@ async def answer_query_pipeline(
     retr = retriever or Retriever(collection=collection, host=host, port=port)
     llm = llm_client or LLMClient(model=cfg.llm_model_name)
 
-    query_vec = embed_texts([question], model=embedding_model)[0]
-    
-    # Retrieve more candidates for reranking
+    timestamp_utc = datetime.now(timezone.utc).isoformat()
+    start_time = time.perf_counter()
+    filters_dump = _serialize_filter(filters)
+
+    initial_chunks: List[RetrievedChunk] = []
+    reranked_chunks: List[RetrievedChunk] = []
+    final_chunks: List[RetrievedChunk] = []
+    vector_scores: Dict[str, Optional[float]] = {}
+    rerank_scores: Dict[str, Optional[float]] = {}
+    diagnostics_obj: Optional[QueryDiagnostics] = None
+
     initial_k = k * 4 if rerank else k
-    retrieved = await retr.search(query_vec, limit=initial_k, query_filter=filters)
 
-    if not retrieved:
-        return AnswerResult(
-            answer="Не удалось найти релевантные фрагменты в Qdrant.",
-            model=llm.model,
-            prompt_tokens=None,
-            completion_tokens=None,
-            total_tokens=None,
-            chunks=[],
+    def _log_diagnostics(diag: QueryDiagnostics) -> None:
+        if not log_queries:
+            return
+        try:
+            write_query_log(diag, log_dir)
+        except Exception as log_exc:  # pragma: no cover - best effort logging
+            logger.warning("Не удалось записать лог запроса: %s", log_exc)
+
+    try:
+        query_vec = embed_texts([question], model=embedding_model)[0]
+        initial_chunks = await retr.search(query_vec, limit=initial_k, query_filter=filters)
+
+        if not initial_chunks:
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            diagnostics_obj = QueryDiagnostics(
+                question=question,
+                answer="Не удалось найти релевантные фрагменты в Qdrant.",
+                answer_found=False,
+                requested_k=k,
+                initial_k=initial_k,
+                rerank_enabled=rerank,
+                filters=filters_dump,
+                embedding_model=embedding_model,
+                llm_model=llm.model,
+                timestamp_utc=timestamp_utc,
+                duration_ms=duration_ms,
+                retrieved=[],
+                reranked=[],
+                final_chunks=[],
+                extra={"reason": "no_chunks"},
+            )
+            _log_diagnostics(diagnostics_obj)
+            return AnswerResult(
+                answer=diagnostics_obj.answer,
+                model=llm.model,
+                prompt_tokens=None,
+                completion_tokens=None,
+                total_tokens=None,
+                chunks=[],
+                diagnostics=diagnostics_obj if include_diagnostics else None,
+            )
+
+        vector_scores = {chunk.chunk_id: chunk.score for chunk in initial_chunks}
+        final_chunks = list(initial_chunks)
+
+        if rerank:
+            from .reranker import Reranker
+
+            reranker = Reranker()
+            reranked_chunks = reranker.rerank(question, initial_chunks, top_n=k)
+            rerank_scores = {chunk.chunk_id: chunk.score for chunk in reranked_chunks}
+            final_chunks = reranked_chunks
+        else:
+            final_chunks = initial_chunks[:k]
+
+        context_block = _render_context(final_chunks, max_chars_per_chunk=max_chars_per_chunk)
+        sys_prompt = system_prompt if system_prompt is not None else get_system_prompt(prompts_path)
+        messages: List[ChatMessage] = []
+        if sys_prompt:
+            messages.append(ChatMessage(role="system", content=sys_prompt))
+        messages.append(ChatMessage(role="user", content=_build_user_prompt(question, context_block)))
+
+        llm_response = await llm.generate(messages, temperature=temperature)
+        answer_text = llm_response.content
+        duration_ms = (time.perf_counter() - start_time) * 1000
+
+        diagnostics_obj = QueryDiagnostics(
+            question=question,
+            answer=answer_text,
+            answer_found=_answer_found(answer_text),
+            requested_k=k,
+            initial_k=initial_k,
+            rerank_enabled=rerank,
+            filters=filters_dump,
+            embedding_model=embedding_model,
+            llm_model=llm_response.model,
+            timestamp_utc=timestamp_utc,
+            duration_ms=duration_ms,
+            retrieved=_build_chunk_diagnostics(
+                initial_chunks,
+                vector_scores=vector_scores,
+                rerank_scores={},
+            ),
+            reranked=_build_chunk_diagnostics(
+                reranked_chunks,
+                vector_scores=vector_scores,
+                rerank_scores=rerank_scores,
+            )
+            if reranked_chunks
+            else [],
+            final_chunks=_build_chunk_diagnostics(
+                final_chunks,
+                vector_scores=vector_scores,
+                rerank_scores=rerank_scores,
+            ),
+            extra={"max_chars_per_chunk": max_chars_per_chunk, "temperature": temperature},
         )
+        _log_diagnostics(diagnostics_obj)
 
-    # Reranking step
-    if rerank:
-        from .reranker import Reranker
-        # Initialize reranker (cached if possible, but here we init every time for simplicity 
-        # or we could pass it as dependency. For now, simple init is fine as model loads are cached by library usually)
-        # Better: use a singleton or pass it in. Given the scope, I'll init it here.
-        # Note: CrossEncoder loads model into memory. Repeated init might be slow if not cached.
-        # Ideally, Reranker should be passed or initialized once.
-        # For this refactor, I will instantiate it here, but in production it should be persistent.
-        # To avoid re-loading weights every request, we rely on sentence-transformers internal caching 
-        # or we should move Reranker init outside.
-        # Let's instantiate it here for now, but maybe add a TODO.
-        reranker = Reranker()
-        retrieved = reranker.rerank(question, retrieved, top_n=k)
-
-    context_block = _render_context(retrieved, max_chars_per_chunk=max_chars_per_chunk)
-    sys_prompt = system_prompt if system_prompt is not None else get_system_prompt(prompts_path)
-    messages: List[ChatMessage] = []
-    if sys_prompt:
-        messages.append(ChatMessage(role="system", content=sys_prompt))
-    messages.append(ChatMessage(role="user", content=_build_user_prompt(question, context_block)))
-
-    llm_response = await llm.generate(messages, temperature=temperature)
-
-    return AnswerResult(
-        answer=llm_response.content,
-        model=llm_response.model,
-        prompt_tokens=llm_response.prompt_tokens,
-        completion_tokens=llm_response.completion_tokens,
-        total_tokens=llm_response.total_tokens,
-        chunks=retrieved,
-    )
+        return AnswerResult(
+            answer=answer_text,
+            model=llm_response.model,
+            prompt_tokens=llm_response.prompt_tokens,
+            completion_tokens=llm_response.completion_tokens,
+            total_tokens=llm_response.total_tokens,
+            chunks=final_chunks,
+            diagnostics=diagnostics_obj if include_diagnostics else None,
+        )
+    except Exception as exc:
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        diagnostics_obj = QueryDiagnostics(
+            question=question,
+            answer="",
+            answer_found=False,
+            requested_k=k,
+            initial_k=initial_k,
+            rerank_enabled=rerank,
+            filters=filters_dump,
+            embedding_model=embedding_model,
+            llm_model=getattr(llm, "model", "unknown"),
+            timestamp_utc=timestamp_utc,
+            duration_ms=duration_ms,
+            retrieved=_build_chunk_diagnostics(
+                initial_chunks,
+                vector_scores=vector_scores,
+                rerank_scores={},
+            )
+            if initial_chunks
+            else [],
+            reranked=_build_chunk_diagnostics(
+                reranked_chunks,
+                vector_scores=vector_scores,
+                rerank_scores=rerank_scores,
+            )
+            if reranked_chunks
+            else [],
+            final_chunks=_build_chunk_diagnostics(
+                final_chunks,
+                vector_scores=vector_scores,
+                rerank_scores=rerank_scores,
+            )
+            if final_chunks
+            else [],
+            extra={"exception_type": type(exc).__name__},
+            error=str(exc),
+        )
+        _log_diagnostics(diagnostics_obj)
+        raise
 

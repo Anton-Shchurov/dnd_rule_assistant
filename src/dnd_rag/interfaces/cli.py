@@ -80,7 +80,7 @@ def _format_meta(payload: dict) -> str:
     return " / ".join(parts) if parts else (chunk_id or "—")
 
 
-def _print_answer(result: AnswerResult) -> None:
+def _print_answer(result: AnswerResult, *, show_debug: bool = False) -> None:
     print("[bold cyan]Ответ[/bold cyan]:")
     print(result.answer.strip())
     print()
@@ -98,6 +98,37 @@ def _print_answer(result: AnswerResult) -> None:
         print(table)
     else:
         print("[yellow]Источники не найдены[/yellow]")
+
+    if show_debug:
+        diag = result.diagnostics
+        if diag and diag.final_chunks:
+            dbg = Table(title="Диагностика контекста")
+            dbg.add_column("#", justify="right", style="cyan")
+            dbg.add_column("chunk_id")
+            dbg.add_column("Vector", justify="right")
+            dbg.add_column("Rerank", justify="right")
+            dbg.add_column("Источник")
+
+            def _fmt_score(value: Optional[float]) -> str:
+                return f"{value:.3f}" if value is not None else "—"
+
+            for chunk in diag.final_chunks:
+                sections = " › ".join(chunk.section_path) if chunk.section_path else ""
+                source_parts = [p for p in (chunk.book_title, chunk.chapter_title, sections) if p]
+                dbg.add_row(
+                    str(chunk.rank),
+                    chunk.chunk_id,
+                    _fmt_score(chunk.vector_score),
+                    _fmt_score(chunk.rerank_score),
+                    " / ".join(source_parts) or chunk.chunk_id,
+                )
+            print(dbg)
+            print(
+                f"[dim]retrieved={len(diag.retrieved)} reranked={len(diag.reranked)} "
+                f"duration={int(diag.duration_ms or 0)}ms[/dim]"
+            )
+        else:
+            print("[yellow]Диагностика недоступна[/yellow]")
 
     if result.total_tokens is not None:
         print(
@@ -169,6 +200,7 @@ def ask_cmd(
     llm_model: Optional[str] = typer.Option(None, "--llm-model", help="Переопределить модель LLM"),
     temperature: Optional[float] = typer.Option(None, "--temperature", help="Температура LLM"),
     rerank: bool = typer.Option(True, "--rerank/--no-rerank", help="Использовать переранжирование"),
+    debug_log: bool = typer.Option(False, "--debug-log", help="Логировать запрос и показать служебную таблицу"),
 ):
     if not question.strip():
         typer.secho("Вопрос не должен быть пустым.", fg=typer.colors.RED)
@@ -188,8 +220,10 @@ def ask_cmd(
         embedding_model=embedding_model,
         temperature=temperature,
         rerank=rerank,
+        log_queries=debug_log,
+        include_diagnostics=debug_log,
     ))
-    _print_answer(result)
+    _print_answer(result, show_debug=debug_log)
 
 
 @app.command("init-qdrant")

@@ -49,6 +49,19 @@ def get_system_prompt(path: Optional[str | Path] = None) -> str:
     return _FALLBACK_SYSTEM_PROMPT
 
 
+def get_eval_prompt(path: Optional[str | Path] = None) -> str:
+    data = _load_prompt_data(path)
+    if "eval_prompt" in data:
+        return str(data["eval_prompt"])
+    return (
+        "Оцени качество ответа по шкале 0-1. "
+        "Ответь JSON: {\"score\": <float>, \"reasoning\": \"...\"}"
+    )
+
+
+
+
+
 
 
 
