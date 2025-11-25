@@ -31,7 +31,7 @@ async def llm_eval_score(
     )
     
     messages = [ChatMessage(role="user", content=user_content)]
-    response = await llm_client.generate(messages, temperature=0.0)
+    response = await llm_client.generate(messages)
     
     content = response.content.strip()
     # Try to find JSON block

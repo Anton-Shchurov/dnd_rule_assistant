@@ -85,8 +85,9 @@ class LLMClient:
         request_kwargs = {
             "model": self.model,
             "messages": payload,
-            "temperature": eff_temperature,
         }
+        if eff_temperature is not None:
+            request_kwargs["temperature"] = eff_temperature
         if eff_max_tokens is not None:
             request_kwargs["max_tokens"] = eff_max_tokens
 
