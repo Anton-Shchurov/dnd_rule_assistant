@@ -18,13 +18,13 @@ class Reranker:
 
     _instance: Optional[Reranker] = None
 
-    def __new__(cls, model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2") -> Reranker:
+    def __new__(cls, model_name: str = "BAAI/bge-reranker-v2-m3") -> Reranker:
         if cls._instance is None:
             cls._instance = super(Reranker, cls).__new__(cls)
             cls._instance.model = CrossEncoder(model_name)
         return cls._instance
 
-    def __init__(self, model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2") -> None:
+    def __init__(self, model_name: str = "BAAI/bge-reranker-v2-m3") -> None:
         # Initialization handled in __new__ to ensure singleton pattern for model loading
         pass
 

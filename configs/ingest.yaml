@@ -115,7 +115,7 @@ ingest:
   # Higher values provide more context but increase latency and LLM prompt size.
   # Нижнее значение уменьшает контекст, но ускоряет ответ.
   # ------------------------------------------------------------------------
-  retrieval_top_k: 5
+  retrieval_top_k: 10
 
 # ------------------------------------------------------------------------------
 # llm: Default language model to use for answers (OpenAI model name)
