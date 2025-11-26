@@ -107,6 +107,16 @@ ingest:
   # ------------------------------------------------------------------------
   include_image_captions: true
 
+  # ------------------------------------------------------------------------
+  # retrieval_top_k: How many chunks to retrieve for context
+  # retrieval_top_k: Сколько чанков извлекать для контекста
+  # ------------------------------------------------------------------------
+  # Controls the breadth of the initial retrieval step.
+  # Higher values provide more context but increase latency and LLM prompt size.
+  # Нижнее значение уменьшает контекст, но ускоряет ответ.
+  # ------------------------------------------------------------------------
+  retrieval_top_k: 5
+
 # ------------------------------------------------------------------------------
 # llm: Default language model to use for answers (OpenAI model name)
 # llm: Модель LLM по умолчанию для ответов (название модели OpenAI)

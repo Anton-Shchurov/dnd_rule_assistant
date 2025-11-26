@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence
 
-from dnd_rag.core.config import load_ingest_config, DEFAULT_CONFIG_PATH
+from dnd_rag.core.config import IngestConfig, load_ingest_config, DEFAULT_CONFIG_PATH
 from dnd_rag.core.pipelines import AnswerResult, answer_query_pipeline
 from dnd_rag.core.prompts import get_eval_prompt
 from dnd_rag.providers.llm import LLMClient, ChatMessage
@@ -103,19 +103,20 @@ def gather_chunk_ids(result: AnswerResult) -> List[str]:
 async def evaluate_sample(
     sample: Dict[str, Any],
     args: argparse.Namespace,
+    ingest_cfg: IngestConfig,
+    resolved_k: int,
 ) -> Dict[str, Any]:
     # Prepare LLM client for evaluation (judge)
     # We use the same model config or can override via args if needed.
     # For simplicity, we use the ingestion config model or default to gpt-4o/mini.
-    cfg = load_ingest_config(args.config or DEFAULT_CONFIG_PATH)
-    judge_llm = LLMClient(model=cfg.llm_model_name)
+    judge_llm = LLMClient(model=ingest_cfg.llm_model_name)
 
     result = await answer_query_pipeline(
         sample["question"],
         collection=args.collection,
         host=args.host,
         port=args.port,
-        k=args.k,
+        k=resolved_k,
         config_path=args.config,
         embedding_model=args.embedding_model,
         temperature=args.temperature,
@@ -169,7 +170,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Offline evaluation for D&D RAG assistant.")
     parser.add_argument("--dataset", type=Path, default=Path("data/eval/dataset.jsonl"), help="JSONL с эталонными вопросами")
     parser.add_argument("--limit", type=int, default=None, help="Ограничить количество примеров")
-    parser.add_argument("--k", type=int, default=5, help="Количество чанков в контексте")
+    parser.add_argument("--k", type=int, default=None, help="Количество чанков в контексте (по умолчанию из ingest.yaml)")
     parser.add_argument("--collection", default="dnd_rule_assistant", help="Коллекция Qdrant")
     parser.add_argument("--host", default="localhost", help="Хост Qdrant")
     parser.add_argument("--port", type=int, default=6333, help="Порт Qdrant")
@@ -182,13 +183,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 async def main_async(args: argparse.Namespace) -> None:
+    ingest_cfg = load_ingest_config(args.config or DEFAULT_CONFIG_PATH)
+    resolved_k = args.k if args.k is not None else ingest_cfg.retrieval_top_k
+
     samples = load_dataset(args.dataset)
     if args.limit is not None:
         samples = samples[: args.limit]
 
     records: List[Dict[str, Any]] = []
     for idx, sample in enumerate(samples, start=1):
-        record = await evaluate_sample(sample, args)
+        record = await evaluate_sample(sample, args, ingest_cfg, resolved_k)
         records.append(record)
         print(
             f"[{idx}/{len(samples)}] recall={record['recall']:.2f} "
@@ -206,7 +210,7 @@ async def main_async(args: argparse.Namespace) -> None:
 
     print("-" * 60)
     print(f"Samples: {len(records)}")
-    print(f"Average Recall@{args.k}: {avg_recall:.3f}")
+    print(f"Average Recall@{resolved_k}: {avg_recall:.3f}")
     print(f"Average F1: {avg_f1:.3f}")
     print(f"Log written to: {log_path}")
 

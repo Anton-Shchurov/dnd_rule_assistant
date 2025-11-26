@@ -192,7 +192,11 @@ def ask_cmd(
     collection: str = typer.Option("dnd_rule_assistant", "--collection", help="Имя коллекции Qdrant"),
     host: str = typer.Option("localhost", "--host", envvar="QDRANT_HOST"),
     port: int = typer.Option(6333, "--port", envvar="QDRANT_PORT"),
-    k: int = typer.Option(5, "--k", help="Количество фрагментов контекста"),
+    k: Optional[int] = typer.Option(
+        None,
+        "--k",
+        help="Количество фрагментов контекста (по умолчанию из ingest.yaml)",
+    ),
     config: Path = typer.Option(DEFAULT_CONFIG_PATH, "--config", help="Путь к ingest.yaml"),
     embedding_model: str = typer.Option(
         "text-embedding-3-small", "--embedding-model", help="Модель эмбеддингов OpenAI"
