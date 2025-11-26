@@ -84,6 +84,10 @@ class IngestConfig(BaseModel):
     # Название LLM по умолчанию, используемой для ответов
     llm_model_name: str = "gpt-5-mini"
 
+    # Maximum number of chunks to retrieve for context
+    # Максимальное количество чанков, извлекаемых для контекста
+    retrieval_top_k: int = 5
+
 
 # ==============================================================================
 # Environment variable overrides class
@@ -122,6 +126,7 @@ class EnvIngestOverrides(BaseSettings):
     keep_tables_as_blocks: Optional[bool] = None
     include_image_captions: Optional[bool] = None
     llm_model_name: Optional[str] = None
+    retrieval_top_k: Optional[int] = None
 
 
 # ==============================================================================

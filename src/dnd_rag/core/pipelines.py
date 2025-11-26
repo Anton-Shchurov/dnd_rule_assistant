@@ -444,7 +444,7 @@ async def answer_query_pipeline(
     collection: str = "dnd_rule_assistant",
     host: str = "localhost",
     port: int = 6333,
-    k: int = 5,
+    k: Optional[int] = None,
     config_path: Optional[str | Path] = None,
     filters: FilterLike = None,
     retriever: Optional[Retriever] = None,
@@ -469,6 +469,7 @@ async def answer_query_pipeline(
         raise ValueError("Вопрос не может быть пустым.")
 
     cfg = load_ingest_config(config_path or DEFAULT_CONFIG_PATH)
+    resolved_k = k if k is not None else cfg.retrieval_top_k
     retr = retriever or Retriever(collection=collection, host=host, port=port)
     llm = llm_client or LLMClient(model=cfg.llm_model_name)
 
@@ -483,7 +484,7 @@ async def answer_query_pipeline(
     rerank_scores: Dict[str, Optional[float]] = {}
     diagnostics_obj: Optional[QueryDiagnostics] = None
 
-    initial_k = k * 4 if rerank else k
+    initial_k = resolved_k * 4 if rerank else resolved_k
 
     def _log_diagnostics(diag: QueryDiagnostics) -> None:
         if not log_queries:
@@ -503,7 +504,7 @@ async def answer_query_pipeline(
                 question=question,
                 answer="Не удалось найти релевантные фрагменты в Qdrant.",
                 answer_found=False,
-                requested_k=k,
+                requested_k=resolved_k,
                 initial_k=initial_k,
                 rerank_enabled=rerank,
                 filters=filters_dump,
@@ -534,11 +535,11 @@ async def answer_query_pipeline(
             from .reranker import Reranker
 
             reranker = Reranker()
-            reranked_chunks = reranker.rerank(question, initial_chunks, top_n=k)
+            reranked_chunks = reranker.rerank(question, initial_chunks, top_n=resolved_k)
             rerank_scores = {chunk.chunk_id: chunk.score for chunk in reranked_chunks}
             final_chunks = reranked_chunks
         else:
-            final_chunks = initial_chunks[:k]
+            final_chunks = initial_chunks[:resolved_k]
 
         context_block = _render_context(final_chunks, max_chars_per_chunk=max_chars_per_chunk)
         sys_prompt = system_prompt if system_prompt is not None else get_system_prompt(prompts_path)
@@ -555,7 +556,7 @@ async def answer_query_pipeline(
             question=question,
             answer=answer_text,
             answer_found=_answer_found(answer_text),
-            requested_k=k,
+            requested_k=resolved_k,
             initial_k=initial_k,
             rerank_enabled=rerank,
             filters=filters_dump,
@@ -580,7 +581,11 @@ async def answer_query_pipeline(
                 vector_scores=vector_scores,
                 rerank_scores=rerank_scores,
             ),
-            extra={"max_chars_per_chunk": max_chars_per_chunk, "temperature": temperature},
+            extra={
+                "max_chars_per_chunk": max_chars_per_chunk,
+                "temperature": temperature,
+                "resolved_k": resolved_k,
+            },
         )
         _log_diagnostics(diagnostics_obj)
 
@@ -599,7 +604,7 @@ async def answer_query_pipeline(
             question=question,
             answer="",
             answer_found=False,
-            requested_k=k,
+            requested_k=resolved_k,
             initial_k=initial_k,
             rerank_enabled=rerank,
             filters=filters_dump,
