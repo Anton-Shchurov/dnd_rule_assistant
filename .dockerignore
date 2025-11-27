@@ -1,0 +1,22 @@
+# Git
+.git
+.gitignore
+
+# Python / Poetry
+__pycache__
+.pytest_cache
+venv/
+.env
+poetry.lock.hash
+
+# Data & Notebooks (keep image small)
+notebooks/
+data/
+tests/
+docs/
+logs/
+scripts/
+
+# Qdrant local storage (if inside project)
+qdrant_storage/
+qdrant_snapshots/

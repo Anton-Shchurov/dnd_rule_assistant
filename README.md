@@ -1,106 +1,96 @@
 # D&D Rule Assistant (RAG)
 
-Персональный RAG-бот по правилам D&D (PHB/DMG): Docling → Qdrant → GPT. Этот документ описывает структуру проекта и назначение каталогов/файлов.
+**A production-ready Retrieval-Augmented Generation (RAG) system for Dungeons & Dragons 5e rules.**
 
-## Структура проекта
+This project demonstrates the implementation of an advanced RAG pipeline designed to answer complex rule questions from the *Dungeon Master's Guide* (DMG). It goes beyond simple text matching by handling complex PDF layouts, implementing hybrid search with reranking, and providing a polished Telegram Bot interface.
+
+---
+
+## 🚀 Project Essence
+
+The goal was to create an assistant capable of navigating the intricate and often cross-referenced rules of D&D. Unlike standard RAG tutorials, this project tackles real-world data challenges: multi-column PDF layouts, tables, and the need for precise, context-aware retrieval.
+
+**Key Features:**
+- **High-Fidelity Parsing**: Converts complex PDFs into structured Markdown.
+- **Hybrid Search**: Combines dense vector embeddings with sparse keyword search (Qdrant).
+- **Two-Stage Retrieval**: Uses a Cross-Encoder to rerank results for maximum relevance.
+- **Production Ready**: Fully Dockerized application with a Telegram interface.
+
+---
+
+## 💡 Challenges & Solutions
+
+During development, I encountered several engineering challenges. Here is how they were solved:
+
+| Challenge | Solution |
+|-----------|----------|
+| **Complex PDF Layouts** | Standard parsers failed on D&D's multi-column layout. I utilized **Docling** to accurately extract text, tables, and headers, converting them into clean Markdown while preserving the document structure. |
+| **Retrieval Accuracy** | Simple vector search often missed specific rule keywords. I implemented **Hybrid Search** (Dense + Sparse) in **Qdrant** to capture both semantic meaning and exact terminology. |
+| **Context Relevance** | To reduce hallucinations, I added a **Cross-Encoder Reranking** step. This re-scores the top retrieved chunks, ensuring the LLM receives only the most pertinent information. |
+| **Deployment** | To ensure the system runs reliably on any server, I containerized the entire application (Bot + Vector DB) using **Docker** and **Docker Compose**. |
+
+---
+
+## 🛠 Tech Stack
+
+- **Language**: Python 3.12
+- **RAG & Database**: Qdrant (Vector Store), OpenAI API (Embeddings & Generation)
+- **Parsing**: Docling
+- **Interface**: Aiogram (Telegram Bot), Typer (CLI)
+- **Infrastructure**: Docker, Docker Compose, Poetry
+
+---
+
+## 📂 Project Structure
+
 ```text
 dnd_rule_assistant/
-├── docker-compose.yml
-├── pyproject.toml
-├── .gitignore
-├── README.md
-├── data/
-│   ├── raw/
-│   ├── processed/
-│   └── embeddings/
+├── docker-compose.yml      # Service orchestration (Bot + Qdrant)
+├── Dockerfile              # Production image definition
+├── pyproject.toml          # Dependency management
 ├── src/
-│   ├── core/
-│   │   ├── config.py
-│   │   ├── io.py
-│   │   ├── retriever.py
-│   │   └── pipelines.py
-│   ├── providers/
-│   │   ├── llm.py
-│   │   ├── embeddings.py
-│   │   └── vectorstore.py
-│   └── interfaces/
-│       ├── bot.py
-│       └── cli.py
-├── configs/
-├── notebooks/
-├── tests/
-├── scripts/
-├── logs/
-└── qdrant_storage/
+│   ├── core/               # RAG pipelines and business logic
+│   ├── providers/          # Clients for OpenAI, Qdrant
+│   └── interfaces/         # Telegram Bot and CLI entry points
+├── configs/                # Configuration files
+└── data/                   # (Excluded from git) Processed knowledge base
 ```
 
-## Назначение папок и файлов
-- data/
-  - raw/: исходные документы (PDF/DOCX) без изменений.
-  - processed/: очищенный текст, чанки (~800 токенов) и метаданные.
-  - embeddings/: сохранённые эмбеддинги для офлайн-анализа/кеша.
-- src/
-  - core/: бизнес-логика и пайплайны.
-    - config.py: централизованные настройки (через .env/pydantic-settings).
-    - io.py: парсинг Docling, нормализация текста, сохранение/чтение артефактов.
-    - retriever.py: векторный/гибридный поиск, top-k, (опц.) rerank.
-    - pipelines.py: сценарии ingest/index/query как переиспользуемые функции.
-  - providers/: адаптеры внешних сервисов.
-    - llm.py: клиент LLM (OpenAI/OpenRouter) и шаблоны вызовов.
-    - embeddings.py: генерация эмбеддингов (OpenAI, опц. локальные модели).
-    - vectorstore.py: клиент/обёртка Qdrant (создание коллекции, upsert, поиск).
-  - interfaces/: точки входа.
-    - bot.py: Telegram-бот (aiogram), команда /ask <вопрос>.
-    - cli.py: CLI (Typer) — check-env, init-qdrant, ingest, query.
-- configs/: (опционально) YAML/JSON-конфиги; приоритет у .env.
-  - `ingest.yaml`: параметры чанкинга (размер, overlap, таблицы) и секция `llm.model_name` с моделью OpenAI по умолчанию (`gpt-5-mini`, можно переопределить через `INGEST_LLM_MODEL_NAME`).
-  - `prompts.yaml`: системный промпт для answer‑пайплайна (редактируется без правок кода).
-- notebooks/: исследования — чанкинг, качество поиска, промпты.
-- tests/: автоматические тесты (smoke/интеграционные для пайплайна и ретривера).
-- scripts/: инженерные утилиты (тонкие обёртки над функциями из src/interfaces/cli.py).
-- logs/: лог-файлы выполнения (не коммитятся).
-- qdrant_storage/: volume для Qdrant, монтируется Docker'ом (не коммитится).
-- docker-compose.yml: локальный Qdrant (порт 6333) с маунтом `./qdrant_storage`.
-- pyproject.toml: управление зависимостями через Poetry.
-- .gitignore: исключения из Git.
-- README.md: это описание структуры проекта.
+---
 
-Примечание: часть файлов появится по мере реализации модулей (ингест, эмбеддинги, ретривер, бота и CLI).
+## ⚡ Quick Start
 
-## Нормализация Markdown
-Ключевые правила нормализации включают:\n
-- Декодирование HTML/`/uniXXXX` последовательностей\n
-- Удаление шумных строк и склейка разрывов слов/строк\n
-- Нормализация дефиса/тире и пробелов\n
-- Восстановление буквиц при наличии `pymorphy2`\n
-- Безопасная замена латинских гомоглифов в русских словах (в т.ч. `h→н`, `m→м`, `t→т`)\n
-- Замена коротких латинских слов в русских строках (белый список; при `pymorphy2` — проверка словаря)\n
-- Замена цифр внутри русских слов (`3/6/0` → «З/з, Б/б, О/о»; `4` в конце → «й/Й»; исключая нотации костей)\n
+The project is designed to be deployed with a single command.
 
-## Новый двухэтапный пайплайн (Sections → Chunks → Qdrant)
+### Prerequisites
+- Docker & Docker Compose
+- OpenAI API Key
+- Telegram Bot Token
 
-- Разделение на секции (без резки по длине):
-  - `poetry run python -m dnd_rag.interfaces.cli sections --in data/processed/md_clean --out data/processed/sections`
+### Installation
 
-- Чанкинг секций токеновым RCTS (параметры из `configs/ingest.yaml`):
-  - `poetry run python -m dnd_rag.interfaces.cli chunks --in data/processed/sections --out data/processed/chunks --config configs/ingest.yaml`
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/your-username/dnd_rule_assistant.git
+   cd dnd_rule_assistant
+   ```
 
-- Инициализация коллекции Qdrant (локально):
-  - `docker compose up -d qdrant`
-  - `poetry run python -m dnd_rag.interfaces.cli init-qdrant --collection dnd_rule_assistant --host localhost --port 6333 --dim 1536`
+2. **Configure Environment**:
+   Create a `.env` file:
+   ```env
+   OPENAI_API_KEY=sk-...
+   TELEGRAM_BOT_TOKEN=123456:ABC...
+   QDRANT_HOST=qdrant
+   ```
 
-- Индексация чанков (OpenAI text-embedding-3-small, ключ в `OPENAI_API_KEY`):
-  - `poetry run python -m dnd_rag.interfaces.cli index --collection dnd_rule_assistant --chunks data/processed/chunks/DMG.jsonl data/processed/chunks/PHB.jsonl`
+3. **Run with Docker**:
+   ```bash
+   docker-compose up -d --build
+   ```
 
-### CLI-вопросы (RAG)
+4. **Interact**:
+   Open your bot in Telegram and send `/start`. Ask any rule question, e.g., *"How does grappling work?"*
 
-- Спросить ассистента напрямую:
-  - `poetry run python -m dnd_rag.interfaces.cli ask "Как создаются персонажи?" --k 4`
-- Можно переопределить модель:
-  - `poetry run python -m dnd_rag.interfaces.cli ask "What is advantage?" --llm-model gpt-5-mini`
+---
 
-### Telegram-бот
-
-1. Задайте токен и параметры подключения (`TELEGRAM_BOT_TOKEN`, при необходимости `QDRANT_HOST/PORT/COLLECTION`).
-2. Запустите `poetry run python -m dnd_rag.interfaces.bot`.
-3. В Telegram используйте `/ask <вопрос>`; бот вернёт ответ и список источников.
+*Created by Anton Shchurov as a portfolio project demonstrating advanced Agentic RAG systems.*

@@ -9,3 +9,15 @@ services:
     volumes:
       - ./qdrant_storage:/qdrant/storage   # Персистентные данные коллекций
       - ./qdrant_snapshots:/qdrant/snapshots # Снапшоты (backup/restore)
+
+  bot:
+    build: .
+    container_name: dnd_bot
+    restart: unless-stopped
+    depends_on:
+      - qdrant
+    env_file:
+      - .env
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
