@@ -11,9 +11,9 @@ This project demonstrates the implementation of an advanced RAG pipeline designe
 The goal was to create an assistant capable of navigating the intricate and often cross-referenced rules of D&D. Unlike standard RAG tutorials, this project tackles real-world data challenges: multi-column PDF layouts, tables, and the need for precise, context-aware retrieval.
 
 **Key Features:**
-- **High-Fidelity Parsing**: Converts complex PDFs into structured Markdown.
-- **Hybrid Search**: Combines dense vector embeddings with sparse keyword search (Qdrant).
-- **Two-Stage Retrieval**: Uses a Cross-Encoder to rerank results for maximum relevance.
+- **High-Fidelity Parsing**: Converts complex PDFs into structured Markdown using **Docling** (with OCR support).
+- **Smart Retrieval**: Uses dense vector embeddings (Qdrant) with a two-stage reranking process.
+- **Context Optimization**: Dynamically adjusts retrieval depth (`k*4` candidates) to maximize recall before reranking.
 - **Production Ready**: Fully Dockerized application with a Telegram interface.
 
 ---
@@ -24,9 +24,10 @@ During development, I encountered several engineering challenges. Here is how th
 
 | Challenge | Solution |
 |-----------|----------|
-| **Complex PDF Layouts** | Standard parsers failed on D&D's multi-column layout. I utilized **Docling** to accurately extract text, tables, and headers, converting them into clean Markdown while preserving the document structure. |
-| **Retrieval Accuracy** | Simple vector search often missed specific rule keywords. I implemented **Hybrid Search** (Dense + Sparse) in **Qdrant** to capture both semantic meaning and exact terminology. |
-| **Context Relevance** | To reduce hallucinations, I added a **Cross-Encoder Reranking** step. This re-scores the top retrieved chunks, ensuring the LLM receives only the most pertinent information. |
+| **Complex PDF Layouts** | Standard parsers failed on D&D's multi-column layout. I utilized **Docling** (with OCR) to accurately extract text, tables, and headers, converting them into clean Markdown while preserving the document structure. |
+| **Retrieval Accuracy** | Simple vector search often missed specific rule keywords. I implemented a **Two-Stage Pipeline**: retrieving a broad set of candidates (`initial_k = 4 * k`) via dense embeddings, then filtering them with a **Cross-Encoder Reranker**. |
+| **Parameter Tuning** | Balancing recall and context window size was tricky. I experimented with various `top_k` and `retrieval_k` values, settling on a dynamic expansion strategy to capture relevant context without overwhelming the LLM. |
+| **Context Relevance** | To reduce hallucinations, the reranker re-scores the retrieved chunks, ensuring the LLM receives only the most pertinent information. |
 | **Deployment** | To ensure the system runs reliably on any server, I containerized the entire application (Bot + Vector DB) using **Docker** and **Docker Compose**. |
 
 ---
@@ -71,7 +72,7 @@ The project is designed to be deployed with a single command.
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/your-username/dnd_rule_assistant.git
+   git clone https://github.com/Anton-Shchurov/dnd_rule_assistant.git
    cd dnd_rule_assistant
    ```
 
