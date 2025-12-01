@@ -2,7 +2,7 @@
 name = "dnd-rule-assistant"
 version = "0.1.0"
 description = "DnD Rule Assistant: Docling → Markdown → RAG (Qdrant)"
-authors = ["Anton Shchurov antonshchurov.bim@gmail.com"]
+authors = ["Anton Shchurov <antonshchurov.bim@gmail.com>"]
 readme = "README.md"
 packages = [
     { include = "dnd_rag", from = "src" }
