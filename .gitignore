@@ -7,6 +7,7 @@ __pycache__/
 
 # Qdrant
 qdrant_storage/
+qdrant_snapshots/
 
 # Data artifacts
 /data/processed/
