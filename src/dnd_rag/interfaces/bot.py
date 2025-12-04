@@ -7,6 +7,9 @@ import logging
 import os
 from typing import Optional
 
+import random
+import re
+from typing import Optional, Set, List
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message
@@ -30,11 +33,41 @@ DEBUG_LOG = os.environ.get("DEBUG_LOG", "").lower() not in {"", "0", "false", "n
 dp = Dispatcher()
 
 
+def _extract_citation_indices(text: str) -> Set[int]:
+    """Extracts citation indices like [1], [2] from text."""
+    matches = re.findall(r"\[(\d+)\]", text)
+    return {int(m) for m in matches}
+
+
 def _format_meta(result: AnswerResult) -> str:
     if not result.chunks:
         return "Источники: нет данных."
+    
+    # Filter chunks based on citations in the answer
+    cited_indices = _extract_citation_indices(result.answer)
+    
+    # If citations are found, filter chunks. Otherwise show all (fallback).
+    if cited_indices:
+        # Filter and keep original indices for display if needed, 
+        # or just re-enumerate. Let's keep original indices to match text citations.
+        # But wait, if text says [1] and we filter, we should ensure chunk [1] is displayed as [1].
+        # So we iterate over all chunks and include only those whose index (1-based) is in cited_indices.
+        display_chunks = []
+        for idx, chunk in enumerate(result.chunks, start=1):
+            if idx in cited_indices:
+                display_chunks.append((idx, chunk))
+    else:
+        # Fallback: show all chunks
+        display_chunks = [(idx, chunk) for idx, chunk in enumerate(result.chunks, start=1)]
+
+    if not display_chunks:
+         # Should not happen if result.chunks was not empty, unless citations point to non-existent chunks
+         # In that case, maybe fallback to all? Or show none? 
+         # Let's fallback to all if filtering resulted in nothing but we have chunks.
+         display_chunks = [(idx, chunk) for idx, chunk in enumerate(result.chunks, start=1)]
+
     lines = ["Источники:"]
-    for idx, chunk in enumerate(result.chunks, start=1):
+    for idx, chunk in display_chunks:
         payload = chunk.payload
         book = payload.get("book_title") or payload.get("book") or ""
         chapter = payload.get("chapter_title") or payload.get("chapter") or ""
@@ -95,7 +128,14 @@ async def handle_message(message: Message) -> None:
     if not question:
         return
 
-    await message.answer("🔍 Ищу ответ в базе…")
+    waiting_messages = [
+        "🧙‍♂️ Вглядываюсь в хрустальный шар…",
+        "📜 Листаю древние манускрипты…",
+        "✨ Советуюсь с мудрецами…",
+        "🐉 Спрашиваю у дракона…",
+        "🎲 Бросаю кубик на мудрость…",
+    ]
+    await message.answer(random.choice(waiting_messages))
     try:
         # Now calling async pipeline directly
         result = await answer_query_pipeline(

@@ -141,7 +141,7 @@ def _print_answer(result: AnswerResult, *, show_debug: bool = False) -> None:
 def docs_sample(
     in_path: Path = typer.Option(Path("data/processed/chunks"), "--in", help="Папка или файл JSONL"),
     q: str = typer.Option(..., "--q", help="Запрос"),
-    k: int = typer.Option(5, "-k", help="Количество результатов"),
+    k: int = typer.Option(5, "--top", help="Количество результатов"),
 ):
     files: List[Path] = []
     if in_path.is_dir():
@@ -278,6 +278,40 @@ def index_cmd(
     upsert_vectors(client, collection, ids=ids, vectors=vectors, payloads=payloads)
 
     print(f"[green]Загружено в Qdrant[/green]: {len(rows)} точек → {collection}")
+
+
+@app.command("snapshot")
+def snapshot_cmd(
+    collection: str = typer.Option("dnd_rule_assistant", "--collection", help="Имя коллекции"),
+    host: str = typer.Option("localhost", "--host", envvar="QDRANT_HOST"),
+    port: int = typer.Option(6333, "--port", envvar="QDRANT_PORT"),
+):
+    """Create a snapshot of the Qdrant collection for portability."""
+    import requests
+    
+    url = f"http://{host}:{port}/collections/{collection}/snapshots"
+    
+    # Check if collection exists
+    check_url = f"http://{host}:{port}/collections/{collection}"
+    try:
+        resp = requests.get(check_url)
+        if resp.status_code == 404:
+            typer.secho(f"Коллекция '{collection}' не найдена.", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+    except requests.exceptions.ConnectionError:
+        typer.secho(f"Не удалось подключиться к Qdrant ({host}:{port})", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    
+    # Create snapshot
+    resp = requests.post(url)
+    if resp.status_code != 200:
+        typer.secho(f"Ошибка создания снапшота: {resp.text}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    
+    result = resp.json().get("result", {})
+    snapshot_name = result.get("name", "unknown")
+    print(f"[green]Снапшот создан[/green]: {snapshot_name}")
+    print(f"[dim]Путь: qdrant_snapshots/{collection}/{snapshot_name}[/dim]")
 
 
 def main():  # pragma: no cover

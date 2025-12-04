@@ -10,12 +10,28 @@ services:
       - ./qdrant_storage:/qdrant/storage   # Персистентные данные коллекций
       - ./qdrant_snapshots:/qdrant/snapshots # Снапшоты (backup/restore)
 
+  qdrant-init:
+    image: curlimages/curl:latest
+    container_name: qdrant_init
+    depends_on:
+      - qdrant
+    volumes:
+      - ./scripts:/scripts:ro
+      - ./qdrant_snapshots:/qdrant/snapshots:ro
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - QDRANT_COLLECTION=dnd_rule_assistant
+    entrypoint: ["/bin/sh", "/scripts/init-qdrant.sh"]
+    restart: "no"
+
   bot:
     build: .
     container_name: dnd_bot
     restart: unless-stopped
     depends_on:
       - qdrant
+      - qdrant-init
     env_file:
       - .env
     environment:

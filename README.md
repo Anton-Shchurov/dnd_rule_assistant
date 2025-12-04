@@ -61,7 +61,7 @@ dnd_rule_assistant/
 
 ## ⚡ Quick Start
 
-The project is designed to be deployed with a single command.
+The project is designed to be deployed with a single command. **The vector database is automatically restored from a snapshot** — no manual indexing required.
 
 ### Prerequisites
 - Docker & Docker Compose
@@ -81,16 +81,27 @@ The project is designed to be deployed with a single command.
    ```env
    OPENAI_API_KEY=sk-...
    TELEGRAM_BOT_TOKEN=123456:ABC...
-   QDRANT_HOST=qdrant
    ```
 
 3. **Run with Docker**:
    ```bash
    docker-compose up -d --build
    ```
+   On first launch, the system automatically restores the pre-built vector database from a snapshot.
 
 4. **Interact**:
    Open your bot in Telegram and send `/start`. Ask any rule question, e.g., *"How does grappling work?"*
+
+---
+
+## 🔧 Development
+
+### Creating a New Snapshot
+
+If you update the knowledge base, create a new snapshot:
+```bash
+poetry run python -m dnd_rag.interfaces.cli snapshot --collection dnd_rule_assistant
+```
 
 ---
 
